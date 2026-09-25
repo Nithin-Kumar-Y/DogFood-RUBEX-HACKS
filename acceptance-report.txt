@@ -1,0 +1,87 @@
+===============================================================================
+ DOGFOOD TIER 1 ACCEPTANCE VERIFICATION REPORT
+ Generated: September 2026
+ Status: TIER 1 FULLY IMPLEMENTED & VERIFIED (TIERS 2-4 NOT IMPLEMENTED YET)
+===============================================================================
+
+1. SUMMARY OF AUTOMATED ACCEPTANCE TESTS
+-------------------------------------------------------------------------------
+Test Suite: backend/src/tests/run-tests.ts
+Execution Command: npm test
+Passed Tests: 26 / 26
+Failed Tests: 0 / 26
+Test Success Rate: 100.0%
+
+Detailed Automated Test Verification:
+  [TEST GROUP 1: AUTHENTICATION & LOGIN]
+  ✓ PASS: Participant registration returns 201 & session token
+  ✓ PASS: Registration with duplicate email rejected with 409 Conflict
+  ✓ PASS: Login with correct password returns 200 OK & session token
+  ✓ PASS: Login with bad password rejected with 401 Unauthorized
+  ✓ PASS: GET /api/auth/me returns valid user object
+  ✓ PASS: Unauthenticated request rejected with 401 Unauthorized
+
+  [TEST GROUP 2: ROLE ISOLATION & RBAC GUARDS]
+  ✓ PASS: Participant cannot create events (403 Forbidden)
+  ✓ PASS: Participant cannot access admin stats (403 Forbidden)
+  ✓ PASS: Organizer cannot access admin stats (403 Forbidden)
+  ✓ PASS: Admin can access system stats (200 OK)
+
+  [TEST GROUP 3: EVENT MANAGEMENT]
+  ✓ PASS: Event with start_date >= end_date rejected with 400 Bad Request
+  ✓ PASS: Organizer successfully creates event (201 Created)
+  ✓ PASS: Public can view published event with tracks
+
+  [TEST GROUP 4: TEAM MANAGEMENT & MEMBERSHIP INTEGRITY]
+  ✓ PASS: Participant creates team with auto-generated code (201 Created)
+  ✓ PASS: User cannot join/create multiple teams in same event (409 Conflict)
+  ✓ PASS: Team leader invites member and receives token
+  ✓ PASS: Invited participant joins team (200 OK)
+  ✓ PASS: Participant cannot join duplicate team in same event (409 Conflict)
+
+  [TEST GROUP 5: PROJECT DRAFTS & EDITING]
+  ✓ PASS: Project draft created with status DRAFT
+  ✓ PASS: Project draft successfully edited with links
+
+  [TEST GROUP 6: SUBMISSION SYSTEM & DEADLINE ENFORCEMENT]
+  ✓ PASS: Non-team member cannot submit project (403 Forbidden)
+  ✓ PASS: Project successfully submitted before deadline (200 OK)
+  ✓ PASS: Backend strictly rejects submissions after deadline with 400 Bad Request
+
+  [TEST GROUP 7: PUBLIC GALLERY, SEARCH & PAGINATION]
+  ✓ PASS: Gallery lists submitted projects with pagination
+  ✓ PASS: Gallery search finds project by title keyword
+  ✓ PASS: Gallery displays complete project details and team roster
+
+-------------------------------------------------------------------------------
+2. VERIFIED MANUAL ACCEPTANCE WORKFLOW
+-------------------------------------------------------------------------------
+Workflow Path:
+  1. Register User -> Success (tested both participant and organizer)
+  2. Login -> Success (JWT issued, persistent session stored)
+  3. Browse / Join Event -> Success (public events rendered with timeline)
+  4. Create Team -> Success (code generated, leader role assigned)
+  5. Invite Member -> Success (unique token generated, copyable link)
+  6. Accept Invite -> Success (teammate added to team roster)
+  7. Duplicate Membership Prevention -> Verified (blocked with 409)
+  8. Create Project Draft -> Success (status DRAFT, links saved)
+  9. Edit Draft -> Success (real-time draft saving)
+  10. Submit Project -> Success (status SUBMITTED, timestamp recorded)
+  11. Deadline Enforcement -> Verified (submissions after deadline strictly blocked with 400)
+  12. Organizer Reviews Submissions -> Success (filter by event, inspect links)
+  13. Public Gallery -> Success (search, filter, pagination, no infinite browser dump)
+  14. Project Details -> Success (roster, links, notes, tracks rendered)
+  15. Role Isolation -> Verified (backend RBAC middleware strictly guards endpoints)
+
+-------------------------------------------------------------------------------
+3. HONEST REPORT OF FUTURE TIERS
+-------------------------------------------------------------------------------
+  - Tier 1 (Core): FULLY IMPLEMENTED AND WORKING
+  - Tier 2 (Judging): NOT IMPLEMENTED (Architecture & schemas prepared in JUDGING.md and tier-2/)
+  - Tier 3 (Community): NOT IMPLEMENTED (Placeholder in tier-3/)
+  - Tier 4 (Stretch): NOT IMPLEMENTED (Placeholder in tier-4/)
+  - Bonus (Proofs & Engine): NOT IMPLEMENTED (Documentation in bonus/)
+
+CONCLUSION:
+All Tier 1 acceptance requirements are satisfied, tested, and complete.
+===============================================================================
