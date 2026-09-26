@@ -1,53 +1,47 @@
-version: '3.8'
+name: dogfood
 
 services:
   db:
     image: postgres:16-alpine
-    container_name: dogfood-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: dogfood
       POSTGRES_PASSWORD: dogfood
       POSTGRES_DB: dogfood
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+      - dogfood_pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dogfood -d dogfood"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: dogfood-backend
+    build: ./backend
     restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      PORT: 4000
-      DATABASE_TYPE: postgres
-      DATABASE_URL: postgres://dogfood:dogfood@db:5432/dogfood
-      JWT_SECRET: dogfood-docker-offline-secret-key-987654321!
-      CLIENT_URL: http://localhost:3000
-    ports:
-      - "4000:4000"
     depends_on:
       db:
         condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://dogfood:dogfood@db:5432/dogfood
+      PORT: 3000
+      PG_POOL_MAX: 20
+      CORS_ORIGIN: http://localhost:8080
+    ports:
+      - "3001:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: dogfood-frontend
+    build: ./frontend
     restart: unless-stopped
-    ports:
-      - "3000:80"
     depends_on:
       - backend
+    ports:
+      - "8080:80"
 
 volumes:
-  postgres_data:
+  dogfood_pgdata:

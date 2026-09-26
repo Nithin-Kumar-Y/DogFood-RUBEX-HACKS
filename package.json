@@ -1,22 +1,17 @@
 {
   "name": "dogfood",
   "version": "1.0.0",
-  "description": "DOGFOOD - Open-source, self-hostable hackathon registration, submission, judging, and results platform",
-  "private": true,
+  "description": "DOGFOOD — hackathon registration, submission, judging, and results platform",
   "scripts": {
-    "test": "npm --prefix backend test",
-    "build": "npm --prefix backend run build && npm --prefix frontend run build",
-    "seed": "npm --prefix backend run seed",
-    "backend": "npm --prefix backend run dev",
-    "frontend": "npm --prefix frontend run dev"
+    "start": "node scripts/start.js",
+    "start:api": "npm --prefix backend start",
+    "test": "npm --prefix backend test"
   },
-  "keywords": [
-    "hackathon",
-    "open-source",
-    "self-hostable",
-    "submissions",
-    "judging"
-  ],
-  "author": "DOGFOOD Team",
+  "dependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT"
 }

@@ -1,26 +1,13 @@
-# Tier 4 — Stretch Capabilities & Integrations (Planned Architecture)
+# Tier 4 — Stretch / Platform (NOT IMPLEMENTED)
 
-> **STATUS: NOT IMPLEMENTED YET**
->
-> In accordance with the prompt guidelines, Tier 4 is **NOT** implemented in this phase.
-> The architectural boundaries, API key schemas, and webhook models are reserved and documented in `ARCHITECTURE.md`.
+Placeholder for the Tier 4 platform extension (later prompt). Planned scope:
 
----
+- Versioned public REST API (`/api/v1/*`) with API keys
+- Webhooks (submission events, signed deliveries, retry queue)
+- Participation / winner certificates (PDF + verification codes)
+- Publicly verifiable judge records (hash-chained result ledger)
+- Embeddable gallery widget (`embed.js` + oEmbed-style endpoint)
+- Bulk import/export (events, teams, projects, results CSV/JSON)
 
-## Planned Capabilities for Tier 4
-
-### 1. Developer REST API & Webhooks
-- Scoped API keys for programmatic event creation, team sync, and submission ingestion.
-- Webhook events for:
-  - `submission.created`, `submission.deadline_passed`, `judging.completed`, `results.published`.
-- Signature verification (`X-Dogfood-Signature` HMAC-SHA256).
-
-### 2. Verifiable Credentials & Certificates
-- Cryptographically verifiable digital certificates for participants, winners, and mentors.
-- OpenCerts and W3C Verifiable Credentials compliance for offline cryptographic verification.
-
-### 3. Embeddable Project Gallery & Widgets
-- Lightweight, zero-dependency embed script (`<script src="/widget/gallery.js">`) allowing organizers to host the DOGFOOD gallery directly on university or corporate domains.
-
-### 4. Bulk Data Migration & Interoperability
-- Bidirectional CSV, JSON, and Devpost-compatible data export/import schemas.
+Backend returns `501 Not Implemented` for `/api/webhooks/*` and
+`/api/certificates/*`.

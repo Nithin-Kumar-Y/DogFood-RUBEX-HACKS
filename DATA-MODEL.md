@@ -1,186 +1,108 @@
-# DOGFOOD Relational Data Model Specification
+# DOGFOOD Data Model
 
-## Overview
+Tier 1 tables are **implemented** (`backend/migrations/001_init.sql`).
+Tier 2–4 tables are **planned** — names/shapes below are the contract future
+migrations must follow so Tier 1 is never restructured.
 
-The DOGFOOD platform employs a normalized, relational database architecture designed to run completely offline without external cloud databases. It supports both embedded **SQLite** (via `better-sqlite3` with WAL mode and foreign keys enabled) for instant local development and zero-configuration setups, as well as **PostgreSQL 16** via Docker Compose.
-
----
-
-## Entity Relationship Overview (Tier 1)
+## Tier 1 entity map (implemented)
 
 ```
-       +------------------+
-       |      users       |<-----------------------------------+
-       +------------------+                                    |
-         | 1            | 1                                    | 1
-         |              +-------------------+                  |
-         | *            | *                 | *                |
-+----------------+ +---------------+ +---------------+ +---------------+
-|    sessions    | |    events     | | team_members  | |  submissions  |
-+----------------+ +---------------+ +---------------+ +---------------+
-                          | 1               | *                | 1
-                          +--------+        |                  |
-                          | 1      | 1      | 1                | 1
-                   +-----------+ +----+  +-----+         +-----------+
-                   |  tracks   | |priz|  |teams|-------->| projects  |
-                   +-----------+ +----+  +-----+ 1     1 +-----------+
-                                                           | 1
-                                                           | *
-                                                    +---------------+
-                                                    | project_links |
-                                                    +---------------+
+users 1───* sessions
+users 1───* events (created_by)
+events 1──* event_tracks        events 1──* prizes
+events 1──* teams               events 1──* projects   events 1──* submissions
+teams 1───* team_members (→ users)
+teams 1───* team_invitations
+teams 1───* projects            teams 1──* submissions
+projects 1─* project_links      projects 1──1 submissions (UNIQUE project_id)
+event_tracks 1──* projects (nullable track_id, SET NULL on delete)
 ```
 
----
+### users
+| col | type | notes |
+|---|---|---|
+| id | SERIAL PK | |
+| email | VARCHAR(255) UNIQUE | lowercased on write; `idx_users_email` |
+| password_hash | TEXT | bcrypt |
+| name | VARCHAR(120) | |
+| role | VARCHAR(20) | `participant\|organizer\|judge\|admin`, `idx_users_role` |
+| created_at / updated_at | TIMESTAMPTZ | |
 
-## Tier 1 Database Tables & Constraints
+### sessions
+| col | notes |
+|---|---|
+| id SERIAL PK; user_id FK→users CASCADE; token_hash CHAR(64) UNIQUE (sha256 of opaque token); expires_at; created_at | indexes on `user_id`, `expires_at` |
 
-### 1. `users`
-Represents all system actors across the platform.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `email` (VARCHAR(255) UNIQUE NOT NULL): Normalized lowercase email.
-- `password_hash` (TEXT NOT NULL): Salted bcrypt hash.
-- `full_name` (VARCHAR(255) NOT NULL).
-- `role` (VARCHAR(32) NOT NULL): Enum (`PARTICIPANT`, `ORGANIZER`, `JUDGE`, `ADMIN`).
-- `avatar_url` (TEXT): Profile photo or DiceBear avatar SVG URL.
-- `bio` (TEXT): User professional bio and affiliations.
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_users_email`, `idx_users_role`.
+### events
+`id, title, slug UNIQUE, description, starts_at, ends_at, submission_deadline, status(draft|published|archived), created_by FK→users SET NULL, created_at, updated_at`,
+`CHECK (starts_at < ends_at)`, indexes on `status`, `submission_deadline`, `created_by`.
+🔌 Tier 2 may ADD: `judging_starts_at, judging_ends_at, rubric_id, blind_review BOOLEAN`. Tier 3 may ADD: `reveal_at`.
 
-### 2. `sessions`
-Provides persistent session management and token lifecycle tracking.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `user_id` (VARCHAR(36) NOT NULL REFERENCES `users(id)` ON DELETE CASCADE).
-- `token` (VARCHAR(512) UNIQUE NOT NULL): Signed JWT with unique session JTI.
-- `expires_at` (TIMESTAMP NOT NULL).
-- `user_agent` (TEXT).
-- `ip_address` (VARCHAR(64)).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_sessions_token`, `idx_sessions_user_id`.
+### event_tracks
+`id, event_id FK CASCADE, name, description, position`, `idx_tracks_event`.
 
-### 3. `events`
-Hackathon competition records managed by Organizers.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `organizer_id` (VARCHAR(36) NOT NULL REFERENCES `users(id)`).
-- `name` (VARCHAR(255) NOT NULL): Full event title.
-- `slug` (VARCHAR(255) UNIQUE NOT NULL): URL-safe kebab-cased identifier.
-- `description` (TEXT NOT NULL): Comprehensive challenge details.
-- `banner_url` (TEXT): Event header artwork.
-- `start_date` (TIMESTAMP NOT NULL).
-- `end_date` (TIMESTAMP NOT NULL).
-- `submission_deadline` (TIMESTAMP NOT NULL): Strict cutoff timestamp.
-- `status` (VARCHAR(32) NOT NULL DEFAULT 'DRAFT'): Enum (`DRAFT`, `PUBLISHED`, `ARCHIVED`).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Business Rule**: Validated on write: `start_date < submission_deadline <= end_date`.
-- **Indexes**: `idx_events_slug`, `idx_events_status`, `idx_events_organizer`, `idx_events_deadline`.
+### prizes
+`id, event_id FK CASCADE, title, description, amount (free text e.g. "$500"), position`.
 
-### 4. `event_tracks`
-Competition categories within an event.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `event_id` (VARCHAR(36) NOT NULL REFERENCES `events(id)` ON DELETE CASCADE).
-- `name` (VARCHAR(255) NOT NULL): Track title (e.g. *Autonomous Agents*).
-- `description` (TEXT).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_tracks_event_id`.
+### teams
+`id, event_id FK CASCADE, name, invite_code VARCHAR(32) UNIQUE, created_by SET NULL, created_at, updated_at`,
+indexes on `event_id`, `invite_code`. Business rule (app-level): one team per user per event.
 
-### 5. `prizes`
-Awards and bounties associated with an event.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `event_id` (VARCHAR(36) NOT NULL REFERENCES `events(id)` ON DELETE CASCADE).
-- `name` (VARCHAR(255) NOT NULL): Prize title (e.g. *Grand Champion*).
-- `description` (TEXT).
-- `amount` (VARCHAR(128)): Financial or prize description (e.g. *$15,000*).
-- `rank` (INTEGER DEFAULT 1): Display and tier order.
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_prizes_event_id`.
+### team_members
+`id, team_id FK CASCADE, user_id FK CASCADE, member_role(owner|member), joined_at`,
+`UNIQUE(team_id, user_id)`, indexes on both FKs.
 
-### 6. `teams`
-Participant teams formed for a specific event.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `event_id` (VARCHAR(36) NOT NULL REFERENCES `events(id)` ON DELETE CASCADE).
-- `creator_id` (VARCHAR(36) NOT NULL REFERENCES `users(id)`).
-- `name` (VARCHAR(255) NOT NULL): Team title.
-- `code` (VARCHAR(64) UNIQUE NOT NULL): Short shareable code (e.g. `NF-9082`).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_teams_event_id`, `idx_teams_code`, `idx_teams_creator`.
+### team_invitations
+`id, team_id FK CASCADE, code, created_by SET NULL, status(pending|accepted|revoked|expired), expires_at NULL, created_at, accepted_by SET NULL, accepted_at NULL` — append-only audit trail of invite lifecycle.
 
-### 7. `team_members`
-Association between participants and teams.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `team_id` (VARCHAR(36) NOT NULL REFERENCES `teams(id)` ON DELETE CASCADE).
-- `user_id` (VARCHAR(36) NOT NULL REFERENCES `users(id)` ON DELETE CASCADE).
-- `role` (VARCHAR(32) NOT NULL DEFAULT 'MEMBER'): Enum (`LEADER`, `MEMBER`).
-- `joined_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Unique Constraint**: `UNIQUE(team_id, user_id)`
-- **Event-Level Integrity**: Server verifies that a user cannot belong to multiple teams in the same event.
-- **Indexes**: `idx_team_members_team`, `idx_team_members_user`.
+### projects
+`id, team_id FK CASCADE, event_id FK CASCADE, title, description, track_id FK→event_tracks SET NULL, status(draft|submitted|locked), created_by SET NULL, created_at, updated_at`,
+indexes on `event_id, team_id, status, track_id`.
+`status='locked'` is set by future tiers; Tier 1 derives "locked display" from deadline.
 
-### 8. `team_invitations`
-Pending and accepted invitations to join a team.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `team_id` (VARCHAR(36) NOT NULL REFERENCES `teams(id)` ON DELETE CASCADE).
-- `email` (VARCHAR(255) NOT NULL): Invited recipient email.
-- `token` (VARCHAR(128) UNIQUE NOT NULL): Secure invitation token.
-- `status` (VARCHAR(32) NOT NULL DEFAULT 'PENDING'): Enum (`PENDING`, `ACCEPTED`, `EXPIRED`, `REVOKED`).
-- `expires_at` (TIMESTAMP NOT NULL): 7-day expiration.
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_invitations_token`, `idx_invitations_team`, `idx_invitations_email`.
+### project_links
+`id, project_id FK CASCADE, label, url, position`.
 
-### 9. `projects`
-Project submissions drafted by teams.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `event_id` (VARCHAR(36) NOT NULL REFERENCES `events(id)` ON DELETE CASCADE).
-- `team_id` (VARCHAR(36) UNIQUE NOT NULL REFERENCES `teams(id)` ON DELETE CASCADE).
-- `track_id` (VARCHAR(36) REFERENCES `event_tracks(id)` ON DELETE SET NULL).
-- `title` (VARCHAR(255) NOT NULL).
-- `tagline` (VARCHAR(500)).
-- `description` (TEXT NOT NULL).
-- `status` (VARCHAR(32) NOT NULL DEFAULT 'DRAFT'): Enum (`DRAFT`, `SUBMITTED`, `LOCKED`).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- `updated_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_projects_event`, `idx_projects_team`, `idx_projects_track`, `idx_projects_status`, `idx_projects_title`.
+### submissions
+`id, project_id UNIQUE FK CASCADE, event_id FK CASCADE, team_id FK CASCADE, submitted_by SET NULL, submitted_at DEFAULT now(), snapshot JSONB` (frozen title/description/links at submit time).
+Indexes on `event_id, team_id, submitted_at`.
 
-### 10. `project_links`
-Demonstration and repository links for projects.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `project_id` (VARCHAR(36) NOT NULL REFERENCES `projects(id)` ON DELETE CASCADE).
-- `title` (VARCHAR(128) NOT NULL): e.g. *GitHub*, *Live Demo*, *Walkthrough Video*.
-- `url` (TEXT NOT NULL).
-- `type` (VARCHAR(32) NOT NULL DEFAULT 'OTHER'): Enum (`GITHUB`, `DEMO`, `VIDEO`, `SLIDES`, `OTHER`).
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Indexes**: `idx_links_project`.
+Plus `schema_migrations(filename PK)` for idempotent boot migrations.
 
-### 11. `submissions`
-Official timestamped submission record confirming adherence to event deadline.
-- `id` (VARCHAR(36) PRIMARY KEY): UUIDv4.
-- `project_id` (VARCHAR(36) UNIQUE NOT NULL REFERENCES `projects(id)` ON DELETE CASCADE).
-- `submitted_by_user_id` (VARCHAR(36) NOT NULL REFERENCES `users(id)`).
-- `submitted_at` (TIMESTAMP NOT NULL): Exact server timestamp.
-- `notes` (TEXT): Submitter comments for judges.
-- `is_final` (INTEGER NOT NULL DEFAULT 1): Flag indicating verified submission.
-- `created_at` (TIMESTAMP DEFAULT CURRENT_TIMESTAMP).
-- **Backend Invariant**: `submitted_at <= event.submission_deadline` strictly verified before insert.
-- **Indexes**: `idx_submissions_project`, `idx_submissions_user`, `idx_submissions_date`.
+### Migration history
+- `001_init.sql` — all Tier 1 tables above.
+- `002_invite_expiry.sql` — **additive only**: `teams.invite_expires_at
+  TIMESTAMPTZ` (+ backfill `now()+30d`, + index). Existing invitations keep
+  working; new/regenerated codes expire after 30 days and are rejected with
+  `410 Gone` on preview/accept.
 
----
+## Tier 2 tables (IMPLEMENTED — migration `003_judging.sql`, additive only)
 
-## Planned Extension Schemas (Tiers 2, 3, 4)
+| Table | Key columns / constraints |
+|---|---|
+| `event_judges` | `event_id FK CASCADE, user_id FK CASCADE, status(invited\|active\|suspended\|completed)`, `UNIQUE(event_id,user_id)` |
+| `rubrics` | `event_id FK CASCADE, title, is_active, version`, one active per event (code-enforced) |
+| `rubric_criteria` | `rubric_id FK CASCADE, label, max_score>0, weight≥0, required, position` |
+| `judge_assignments` | `event_id/judge_id/project_id FKs, kind(normal\|calibration), round, status(pending\|submitted)`, `UNIQUE(judge_id,project_id,round)` |
+| `evaluations` | `assignment_id UNIQUE FK CASCADE, rubric_id FK RESTRICT, scores JSONB, raw_total, status(draft\|submitted\|invalid\|excluded)` |
+| `calibration_runs` | `event_id FK, reference_judge_id FK, mode, version (per event), status(pending\|complete\|failed)` |
+| `judge_calibrations` | `run_id FK CASCADE, source/target judges, low/high anchor project FKs, 4 scores, slope, intercept, status(6), reason, evidence JSONB`, `UNIQUE(run_id,source_judge_id)`, `CHECK(anchors differ)` |
+| `normalized_scores` | `run_id/evaluation/project/judge FKs, raw_score, normalized_score NULL-able, extrapolated, status`, `UNIQUE(run_id,evaluation_id)` |
+| `audit_events` | `actor_id SET NULL, event_id FK CASCADE, action, entity, entity_id, meta JSONB` |
 
-### Planned Tier 2 Tables (Judging Engine)
-- `rubric_criteria` (`id`, `event_id`, `name`, `description`, `weight`, `max_points`)
-- `judge_assignments` (`id`, `event_id`, `judge_user_id`, `project_id`, `status`, `assigned_at`)
-- `rubric_scores` (`id`, `assignment_id`, `criterion_id`, `score`, `feedback`, `submitted_at`)
-- `score_normalizations` (`id`, `event_id`, `project_id`, `raw_avg`, `z_score`, `trimmed_mean`, `rank`)
+Raw evaluations are immutable evidence; normalization outputs are versioned
+per `calibration_runs` version and never overwrite raw data.
 
-### Planned Tier 3 Tables (Community Engagement)
-- `community_votes` (`id`, `project_id`, `user_id`, `ip_hash`, `created_at`, `UNIQUE(project_id, user_id)`)
-- `project_comments` (`id`, `project_id`, `user_id`, `parent_id`, `content`, `status`, `created_at`)
-- `audit_logs` (`id`, `entity_type`, `entity_id`, `user_id`, `action`, `metadata`, `created_at`)
+## Planned extension points (NOT implemented — do not query these yet)
 
-### Planned Tier 4 Tables (Integrations & Verifiable Credentials)
-- `api_keys` (`id`, `user_id`, `key_prefix`, `hashed_secret`, `scopes`, `last_used_at`, `expires_at`)
-- `webhooks` (`id`, `event_id`, `target_url`, `secret`, `subscribed_events`, `is_active`)
-- `certificates` (`id`, `event_id`, `user_id`, `project_id`, `type`, `verification_hash`, `issued_at`)
+- **Tier 3:** `votes` (`UNIQUE(project_id, voter_id)`), `comments`
+  (moderation `status`), `audit_log` (append-only). Gallery randomization is
+  application-level (seeded shuffle), no schema change.
+- **Tier 4:** `api_keys`, `webhook_endpoints`, `webhook_deliveries`,
+  `certificates` (`UNIQUE(submission_id)`, `UNIQUE(code)`).
+- **Bonus:** `pairwise_prefs (judge_id, winner_id, loser_id, round)` for
+  Bradley-Terry aggregation experiments.
+
+Referential-integrity policy: Tier 1 rows are never hard-rewritten by later
+tiers — judging/votes reference them; deleting an event cascades (organizers
+blocked when submissions exist unless admin).

@@ -1,113 +1,111 @@
-# DOGFOOD Planned Judging Architecture (Tier 2 & Bonus Blueprint)
+# DOGFOOD Judging — Tier 2 (IMPLEMENTED)
 
-> ### IMPORTANT ARCHITECTURAL NOTICE
-> **Tier 1 is fully implemented and active in this release.**
-> In accordance with Prompt 1a instructions:
-> - **Tier 2, Tier 3, Tier 4, and Bonus capabilities are NOT implemented yet.**
-> - This document specifies the complete future judging engine architecture, mathematical proofs, threat models, and interface contracts to ensure future prompts can implement them without rewrites.
-> - The software cleanly routes and informs Judges through `JudgeDashboard` and backend extension contracts in `backend/src/modules/judging/`.
+> Status: **Tier 2 is implemented and tested** (73/73 backend tests green,
+> incl. 31 judging tests + a 10-judge/100-project E2E). This document describes
+> the shipped workflow. Pairwise/Bradley-Terry remains a future extension and
+> is explicitly NOT included.
 
----
+## Workflow (all persisted, all backend-enforced)
 
-## 1. Judging System Overview
+Organizer invites judges → configures rubric → assigns projects (manual or
+deterministic batch) → judges evaluate assigned projects (draft → submit) →
+organizer starts a calibration run (reference judge + mode) → shared
+calibration projects are evaluated by multiple judges → organizer calculates
+two-point linear normalization → normalized scores + finals persist →
+organizer reviews calibration dashboard, score comparison, final results with
+"why is this score?" derivations → CSV export → audit trail covers the lifecycle.
 
-The DOGFOOD judging engine is architected to solve the three core challenges of hackathon evaluation:
-1. **Judge Calibration Variance**: Lenient vs strict judges skewing raw points.
-2. **Unequal Evaluation Distribution**: Inconsistent review counts per project.
-3. **Judge Fatigue**: Multi-page rubric burnout leading to rubber-stamping.
+## Assignment model
 
----
+- `event_judges(event_id, user_id, status)` — roster with lifecycle
+  `invited → active → suspended/completed`. Suspended/completed judges are
+  blocked from scoring (403); removal is blocked after submitted evaluations.
+- `judge_assignments(event_id, judge_id, project_id, kind, round, status)` with
+  `UNIQUE(judge_id, project_id, round)` — duplicates rejected by constraint +
+  application-level skip reporting. Kinds: `normal`, `calibration`.
+- Manual: `POST /judging/events/:id/assignments` (validates roster status +
+  submitted-project membership). Reassignment = DELETE (blocked post-submit) + re-add.
+- Batch: `POST …/assignments/batch {coverage, max_load, seed}` — deterministic
+  seeded shuffle (mulberry32) + rotation deal across active judges; reports
+  created/skipped/unassigned + per-judge loads. Example: 100 projects × 10
+  judges × coverage 2 works with no hard-coded numbers.
 
-## 2. Core Planned Components (Tier 2)
+## Rubric model
+
+- `rubrics(event_id, title, version, is_active)` + `rubric_criteria(label,
+  max_score, weight, required, position)`. Organizers create versions (old ones
+  deactivated, never mutated under submitted evaluations); drafts keep their
+  original rubric version for stability.
+- Evaluations store criterion-level `scores` JSONB + server-computed
+  `raw_total = Σ value × weight` (validated 0 ≤ value ≤ max_score; required
+  criteria enforced on submit). Frontend totals are display-only.
+- States: `draft → submitted`, plus `invalid`/`excluded` (excluded from finals).
+  Submitted evaluations lock for judges; organizer reopen is audited
+  (`evaluation.reopened`) and preserves raw scores.
+
+## Calibration: shared projects + two-point formula
+
+Calibration anchors MUST be the SAME projects evaluated by BOTH judges —
+never rank-matched unrelated projects. Anchor project IDs persist on every
+`judge_calibrations` row.
+
+Exact Tier-2 transformation (Judge B → reference Judge A):
 
 ```
-+-------------------------------------------------------------+
-|                      DOGFOOD JUDGING ENGINE                 |
-+-------------------------------------------------------------+
-                               |
-       +-----------------------+-----------------------+
-       |                       |                       |
-       v                       v                       v
-[Judge Assignment]     [Rubric Evaluation]   [Score Normalization]
-  - Round Robin          - Weighted Criteria   - Z-score algorithm
-  - Track-specialized    - Blinded scoring     - Trimmed mean
-  - COI filter           - Qualitative notes   - Outlier mitigation
+S(B→A) = A_L + ((S_B − B_L) / (B_H − B_L)) × (A_H − A_L)
+slope     = (A_H − A_L) / (B_H − B_L)
+intercept = A_L − slope × B_L
+S(B→A)    = intercept + slope × S_B
 ```
 
-### 2.1 Role Isolation & Security
-- Judges are assigned specific sets of projects.
-- In blinded mode, judges cannot view scores submitted by peer judges prior to tallying.
-- Judges cannot edit participant projects, modify deadlines, or alter event parameters.
-- Participants cannot view judge identity or individual raw scores prior to official publication.
+Modes (minimum shared submitted projects): `ONE_LOW_ONE_HIGH` (2, default),
+`TWO_LOW_ONE_HIGH` (3), `ONE_LOW_TWO_HIGH` (3), `TWO_LOW_TWO_HIGH` (4). Anchors
+are ordered by the reference scale (low = reference-min); extras are retained
+in `evidence` JSONB as validation data. Mandatory example verified in tests:
+P1 A=70/B=87, P3 A=80/B=96 ⇒ slope 10/9 ≈ 1.111111, intercept ≈ −26.666667;
+B 87→70, 92→75.5556 (≈75.56), 96→80.
 
-### 2.2 Configurable Weighted Rubrics
-Each event organizer can configure custom weighted criteria:
-- $\text{Score}_{\text{project}} = \sum_{i=1}^{n} (w_i \times s_{i})$ where $\sum w_i = 1.0$.
-- Criteria attributes:
-  - `name`: String (e.g. "Technical Innovation")
-  - `description`: Guiding rubric anchor points (1–3 Poor, 4–7 Competent, 8–10 Exceptional)
-  - `weight`: Fractional multiplier (e.g. 0.35)
-  - `max_points`: Maximum integer score (e.g. 10 or 100)
+Transformations are stored per pair as `Judge X → Judge Y` with source/target
+judges, anchors, four scores, slope, intercept, version (`calibration_runs`
+per-event versioning), timestamp, and status. The reference judge is
+configurable per run (self-row: slope 1, intercept 0) — never hard-coded.
 
-### 2.3 Algorithmic Project Assignment
-- **Constraint Matrix**:
-  - Every project receives at least $K$ independent reviews (default $K \ge 3$).
-  - No judge receives more than $M$ assignments to avoid cognitive fatigue.
-  - Conflict of Interest (COI) graph pruning: Ensures no judge reviews a project from a teammate, colleague, or disclosed affiliated organization.
+## Normalization statuses & edge cases
 
----
+`VALID · INVALID · INSUFFICIENT_CALIBRATION_DATA · SUSPICIOUS_CALIBRATION ·
+EXTRAPOLATED · PENDING` — persisted per calibration and per normalized score.
+Zero denominator → `INVALID/ZERO_SOURCE_RANGE`; one shared project →
+`INSUFFICIENT/ONLY_ONE_SHARED_PROJECT`; inverted anchor order →
+`SUSPICIOUS/NEGATIVE_SLOPE` (excluded from finals, organizer review);
+out-of-range raws still transform but set `extrapolated=true` (+`EXTRAPOLATED`
+status); missing data → `PENDING` (nothing invented); duplicate anchors
+rejected by `CHECK` + validator. Raw scores are never overwritten;
+recalculation creates a new run version.
 
-## 3. Mathematical Score Normalization Engine (Bonus Architecture)
+## Final aggregation
 
-### 3.1 The Calibration Problem
-Consider Judge $A$ who scores uniformly between $[75, 95]$ ($\mu_A = 85, \sigma_A = 5$), and Judge $B$ who scores uniformly between $[40, 70]$ ($\mu_B = 55, \sigma_B = 10$). A project scored 75 by Judge $A$ represents a bottom-tier submission, whereas 75 by Judge $B$ represents an unprecedented top score. Using raw averages creates severe injustice.
+Per project: mean of `VALID`/`EXTRAPOLATED` normalized scores, plus raw
+avg/min/max, normalized min/max, σ, and explicit pending/invalid/excluded
+counts. Only valid normalized scores participate — visibly, not silently.
 
-### 3.2 Z-Score Transformation Proof
-To eliminate individual scale bias, DOGFOOD defines the normalized standard score $z_{j,p}$ for judge $j$ on project $p$:
+## Auditability & security
 
-$$z_{j,p} = \frac{x_{j,p} - \mu_j}{\sigma_j}$$
+- Every normalized score carries: raw, normalized, source/reference judges,
+  calibration id, anchors, four scores, slope, intercept, timestamp, run
+  version, extrapolated flag, status. `GET /judging/normalized/:id` renders the
+  worked formula from persisted data ("Why is this score 75.56?").
+- `audit_events` records judge/roster changes, assignments, submissions,
+  reopens, calibration lifecycle, and exports (actor + entity + meta JSONB).
+- Judges access only own assignments/evaluations (403 otherwise), never other
+  judges' raw scores or organizer analytics; participants see nothing;
+  organizers manage only own events (admin bypass). All enforced in SQL-backed
+  route checks, never just hidden UI.
 
-Where:
-- $x_{j,p}$ is the raw weighted score assigned by judge $j$ to project $p$.
-- $\mu_j = \frac{1}{|P_j|} \sum_{p \in P_j} x_{j,p}$ is judge $j$'s mean score across their assigned projects $P_j$.
-- $\sigma_j = \sqrt{\frac{1}{|P_j|-1} \sum_{p \in P_j} (x_{j,p} - \mu_j)^2}$ is judge $j$'s standard deviation.
+## Tests
 
-**Mathematical Rank Invariance Theorem**:
-If a judge applies any monotonic linear affine transformation $y = \alpha x + \beta$ ($\alpha > 0$) to their internal grading scale:
-$$\mu_y = \alpha \mu_x + \beta$$
-$$\sigma_y = \alpha \sigma_x$$
-$$z_{y} = \frac{(\alpha x + \beta) - (\alpha \mu_x + \beta)}{\alpha \sigma_x} = \frac{\alpha(x - \mu_x)}{\alpha \sigma_x} = z_x$$
-
-*Proof Conclusion*: The Z-score is mathematically invariant to strictness offsets ($\beta$) and scale expansions ($\alpha$).
-
-### 3.3 Modified Borda Count & Trimmed Mean
-To resist malicious rogue judges, the trimmed composite score removes the minimum and maximum Z-scores when $|J_p| \ge 4$:
-$$\bar{z}_p = \frac{1}{|J_p| - 2} \sum_{k=2}^{|J_p|-1} z_{(k), p}$$
-
----
-
-## 4. Pairwise Evaluation Alternative (Bradley-Terry Model)
-
-For rapid evaluations or preliminary rounds, DOGFOOD is architected to support pairwise comparisons ($A \text{ vs } B$):
-$$P(\text{Project } i \succ \text{Project } j) = \frac{\pi_i}{\pi_i + \pi_j}$$
-Where $\pi_i$ represents the latent quality parameter estimated via maximum likelihood iteration. Pairwise comparisons require zero numeric calibration from judges and decrease review time by 60%.
-
----
-
-## 5. Threat Model & Adversarial Mitigations
-
-| Threat Vector | Attack Mechanism | Planned Architectural Defense |
-|---|---|---|
-| **Judge Bribery / Collusion** | Judge gives 100 to target team and 0 to all competing teams | Z-score normalization clamps variance; trimmed mean discards outlier scores; COI matrix forbids assignment |
-| **Late Submission Bypass** | Manipulating client clock to submit post-deadline | Server-side monotonic clock strictly rejects any submission where server timestamp > event deadline |
-| **Tampered Score Submission** | Intercepting and altering rubric scores in transit | Signed session tokens; immutable score revisions with cryptographic audit log |
-| **Position Bias** | Early projects in gallery receiving disproportionate attention | Dynamic randomized presentation order for public and preliminary reviews |
-
----
-
-## 6. Implementation Readiness in Codebase
-
-The extension contracts and type definitions are located in:
-- `backend/src/modules/judging/judging.types.ts`: TypeScript contracts for rubrics, assignments, scores, and normalization.
-- `backend/src/modules/judging/judging.routes.ts`: Extension endpoint returning status and readiness signal.
-- `frontend/src/pages/judge/JudgeDashboard.tsx`: Dashboard communicating evaluation phase status and roadmap.
+`tests/normalization.test.js` (13: formula, precision, all edges, anchor
+rules, explanation), `tests/judging.test.js` (14: full lifecycle incl. 70/87 +
+80/96 numbers, isolation, progress, suspend, versioning, reopen, CSV, audit),
+`tests/judging_e2e.test.js` (4: 10 judges/100 projects, batch determinism,
+INSUFFICIENT-then-VALID runs, slope 1.25 identity checks, 118 normalized rows,
+CSV row counts, scale isolation). Tier-1 suites (42) still green unmodified.

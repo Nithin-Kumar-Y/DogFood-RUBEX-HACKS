@@ -1,111 +1,174 @@
-# DOGFOOD Platform System Architecture (Tier 1 → Tier 4 + Bonus)
+# DOGFOOD Architecture (Tier 1 → Tier 4 + Bonus)
 
-## Executive Summary
+> **IMPLEMENTED: Tier 1** (§2–§4, §9–§10 of this doc) and **Tier 2 judging**
+> (§5, plus `backend/src/judging/`, `003_judging.sql`, organizer/judge judging
+> UI) — 73/73 backend tests green.
+>
+> **PLANNED, NOT BUILT: Tier 3** (§6), **Tier 4** (§7), **Bonus** (§8).
+> Pairwise/Bradley-Terry is explicitly excluded from Tier 2 and remains future
+> work. The running app exposes explicit `501` placeholders only for Tier 3/4.
 
-**DOGFOOD** is an open-source, self-hostable, offline-first hackathon registration, submission, judging, and results platform. It is engineered with a strict modular decoupled architecture that runs reliably on local developer hardware via Docker Compose without external internet dependencies, hosted databases, or proprietary services.
+## 1. Principles
 
----
+- **Self-hostable & offline-first:** `docker compose up` is the whole install.
+  No cloud accounts, hosted DBs, external APIs, or proprietary services.
+  Runtime needs zero internet (frontend ships no CDN assets; fonts are system).
+- **Modular monolith:** `frontend → backend/API → service logic → database`.
+  One deployable backend today; modules split cleanly later (e.g. judging
+  worker) without rewrites.
+- **Relational source of truth:** PostgreSQL 16. Judging/votes/webhooks all
+  FK to Tier 1 rows (`projects`, `submissions`, `teams`, `events`).
+- **Backend-enforced security:** RBAC + ownership + deadline checks run in
+  Express middleware/handlers. The SPA is a convenience layer, never a guard.
+- **Pagination & indexing by default:** every list endpoint is
+  `page/limit/total/totalPages` with indexed `WHERE`/`ORDER BY`; no unbounded
+  `SELECT *` reaches the browser.
+- **Stateless API:** auth state lives in the `sessions` table (opaque token →
+  `sha256` lookup); any backend replica + connection pool works.
 
-## 1. System Topology & Tier Progression
-
-```
-+-----------------------------------------------------------------------------------+
-|                                 DOGFOOD PLATFORM                                  |
-+-----------------------------------------------------------------------------------+
-|  [TIER 1 - CORE] (FULLY IMPLEMENTED)                                              |
-|  - Relational Schema (SQLite / PostgreSQL)                                        |
-|  - Role-Based Access Control (Participant, Organizer, Judge, Admin)               |
-|  - Hackathon Lifecycles, Timelines & Strict Backend Deadline Enforcement          |
-|  - Team Formation, Unique Event Membership & Invitation Links                    |
-|  - Project Draft Management & Validation                                          |
-|  - Public Searchable & Paginated Project Gallery                                  |
-+-----------------------------------------------------------------------------------+
-|  [TIER 2 - JUDGING ENGINE] (PLANNED EXTENSION)                                    |
-|  - Configurable Weighted Rubrics & Track Specialization                           |
-|  - Algorithmic Judge Assignment (Round-Robin, COI mitigation)                     |
-|  - Mathematical Normalization (Z-Score, Trimmed Mean) & CSV Export               |
-+-----------------------------------------------------------------------------------+
-|  [TIER 3 - COMMUNITY & FAIR DISCOVERY] (PLANNED EXTENSION)                       |
-|  - Sybil-Resistant Community Voting & Threaded Feedback                           |
-|  - Blinded Results & Fair Project Card Randomization                              |
-|  - Cryptographic Audit Trail                                                      |
-+-----------------------------------------------------------------------------------+
-|  [TIER 4 - STRETCH CAPABILITIES] (PLANNED EXTENSION)                              |
-|  - REST Developer API & Webhooks                                                  |
-|  - Verifiable Digital Certificates (OpenCerts/W3C)                                |
-|  - Embeddable Gallery Widgets                                                     |
-+-----------------------------------------------------------------------------------+
-```
-
----
-
-## 2. Multi-Layer Modular Architecture
-
-The application strictly implements the **Frontend → Backend/API → Service/Business Logic → Database** paradigm:
+## 2. Runtime topology (docker compose)
 
 ```
-[ CLIENT BROWSER ]
-       │
-       ▼ HTTP / REST
-[ FRONTEND LAYER: React 18 + Vite SPA ]
-  ├── AuthContext & RBAC Guards
-  ├── Design System (Glassmorphism, Dark Mode Tokens)
-  └── Role-Specific Views (Participant, Organizer, Judge, Admin, Public)
-       │
-       ▼ Reverse Proxy (Nginx) / Direct API (Port 4000)
-[ BACKEND API LAYER: Node.js Express ]
-  ├── Security: Helmet, CORS, Rate-Limiting
-  ├── Middleware: JWT Session Verification, RBAC Route Protection
-  └── Controllers: DTO Validation & HTTP Serialization
-       │
-       ▼ Domain Invocations
-[ SERVICE / BUSINESS LOGIC LAYER ]
-  ├── AuthService (Bcrypt, Session Tokens)
-  ├── EventsService (Timeline Validation, Publication)
-  ├── TeamsService (Membership Integrity, Unique Constraints)
-  ├── ProjectsService (Draft Persistence, Link Verification)
-  ├── SubmissionsService (Monotonic Backend Deadline Enforcement)
-  └── GalleryService (Server-Side Query Construction & Pagination)
-       │
-       ▼ Parameterized SQL
-[ DATABASE REPOSITORY ADAPTER LAYER ]
-  ├── SQLiteAdapter (better-sqlite3 WAL mode for local zero-dependency operation)
-  └── PostgresAdapter (pg Pool for Docker Compose multi-service deployment)
+internet (build-time only: npm, apt/apk, base images)
+   │
+   ▼  docker compose up
+┌─────────────┐   :8080    ┌──────────┐  /api/*   ┌──────────┐
+│   frontend  │ ────────── │  nginx   │ ───────── │ backend  │──┐
+│ nginx:alpine│  static SPA│ (same    │ proxy     │ node:20  │  │
+│  html/css/js│            │ origin)  │           │ express  │  │
+└─────────────┘            └──────────┘           └──────────┘  │
+                                                        │ pg    │
+                                                   ┌──────────┐ │
+                                                   │ postgres │◄┘
+                                                   │ 16-alpine│  pooled (max 20)
+                                                   └──────────┘  volume: dogfood_pgdata
 ```
 
----
+Boot sequence (backend `src/server.js`): wait-for-DB → `migrate()` (idempotent
+`schema_migrations`) → `seed()` (idempotent) → `listen(:3000)`.
+Health: `GET /api/health` (DB ping) for compose healthchecks + admin UI.
 
-## 3. Security & Access Control Architecture (RBAC)
+## 3. Backend modules (Tier 1 — built)
 
-DOGFOOD enforces security on the backend; frontend route shielding serves purely as an interface aid.
+```
+backend/src/
+  server.js        boot: wait → migrate → seed → listen
+  app.js           Express factory (also used by tests); mounts routes,
+                   /stats/* dashboards, 501 placeholders for future tiers
+  db.js            pooled pg; setPool() injection for tests
+  auth.js          session loader, requireAuth, requireRole (admin bypass)
+  util.js          slugs, invite codes, tokens, validators, deadline logic
+  migrate.js / seed.js
+  routes/
+    auth.js        register/login/logout/me/profile
+    events.js      event CRUD + tracks + prizes + organizer submissions/teams
+    teams.js       teams CRUD, leave/delete rules, invites (create/list/preview/accept, 30-day expiry → 410)
+    projects.js    draft CRUD, submit/unsubmit (deadline-guarded)
+    gallery.js     public paginated gallery + details (submitted only)
+    submissions.js /submissions/mine
+    organizer.js   cross-event aggregates: /organizer/teams|projects|submissions (own events only)
+    admin.js       user list/role mgmt, system overview
+```
 
-### Role Hierarchy
-1. **ADMIN**: Superuser access. Controls platform users, reviews all events, monitors system diagnostics, and overrides settings.
-2. **ORGANIZER**: Creates and edits hackathons, configures tracks and prizes, inspects all project submissions, and toggles publication.
-3. **PARTICIPANT**: Creates/joins teams (strictly one team per event), drafts project submissions, attaches demo links, and submits before deadlines.
-4. **JUDGE**: Assigned evaluations portal, previews submissions, and awaits rubric scoring activation in Tier 2.
+Key invariants (all server-side):
+- Registration is participant-only; elevation requires an admin (`PUT /admin/users/:id/role`).
+- One team per user per event (checked on create + join).
+- One project per team per event; drafts private to members + event staff.
+- Submit requires: title ≥ 3, description ≥ 20, ≥ 1 valid http(s) link,
+  track selected when the event defines tracks, status `draft`, **now ≤ deadline**.
+- After deadline: create/edit/submit/unsubmit all `400/403`; project shows LOCKED.
+- Gallery only returns `projects.status='submitted'` in `published` events.
 
-### Enforced Security Invariants
-- **Backend Deadline Barrier**: Submissions submitted after `event.submission_deadline` are unconditionally rejected by `SubmissionsService` with HTTP 400.
-- **Unique Event Team Membership**: A participant cannot be a member or creator of more than one team in the same hackathon.
-- **Role Isolation**: Only organizers and admins can access `/api/events` creation and `/api/submissions` review. Participants attempting restricted calls receive HTTP 403 Forbidden.
+## 4. Frontend (Tier 1 — built)
 
----
+Zero-dependency SPA (`frontend/app.js`, hash router, `fetch` + `credentials:include`,
+Bearer fallback from `localStorage`). Role-specific sidebars:
 
-## 4. Performance & Scalability Targets
+- Participant: Dashboard, Events, My Teams, My Projects, Submissions (+ Profile)
+- Organizer: Dashboard, My Events, New Event (+ Teams/Submissions per event)
+- Judge: placeholder dashboard → Tier 2
+- Admin: Dashboard, Users, Events, System
+- Public: Home, Events, Gallery (+ Login/Register/Join)
 
-Tier 1 is engineered to fulfill high-traffic benchmarks:
-- **10,000+ Registered Participants**: Relational indexed foreign keys on `users.id`, `teams.event_id`, and `projects.event_id`.
-- **1,000 Public Requests/Minute**: Public gallery endpoints use indexed limit/offset queries, preventing out-of-memory overhead.
-- **In-Memory Rate Limiting**: Safeguards authentication endpoints from brute-force attempts without requiring external Redis instances.
+Shared UX kit: toasts, confirm modals, skeletons, empty/error/loading states,
+live deadline countdowns, client+server form validation, CSV export (basic).
 
----
+## 5. Tier 2 — Judging (IMPLEMENTED)
 
-## 5. Offline Operation & Docker Architecture
+Tables (migration `003_judging.sql`, all FK to Tier 1, additive only):
+`event_judges` (roster + invited/active/suspended/completed),
+`rubrics` + `rubric_criteria` (versioned, one active per event),
+`judge_assignments` (normal/calibration, `UNIQUE(judge,project,round)`),
+`evaluations` (criterion scores JSONB + server-computed raw_total; immutable
+once submitted; organizer reopen audited),
+`calibration_runs` (per-event versions, configurable reference judge + mode),
+`judge_calibrations` (persisted anchors, four scores, slope, intercept,
+status), `normalized_scores` (derived, versioned per run, never overwrite
+raw), `audit_events` (append-only lifecycle trail).
 
-The platform requires zero external cloud connections:
-- `docker-compose.yml` orchestrates:
-  - `db`: PostgreSQL 16 Alpine container with healthchecks and persistent volume.
-  - `backend`: Multi-stage Node Alpine container with automatic schema migrations and demo data seeding on startup.
-  - `frontend`: Multi-stage Nginx Alpine container serving the pre-built React application and proxying `/api` traffic.
-- When running locally outside of Docker (`npm test` or `npm run dev`), the system automatically utilizes the built-in SQLite engine with zero configuration needed.
+Services: `backend/src/judging/normalization.js` (`NormalizationStrategy` base +
+production `TwoPointLinearNormalization`; future strategies plug in without
+touching routes/UI). API: `backend/src/routes/judging.js` mounted at
+`/api/judging/*` (judges, rubrics, assignments, evaluations, progress,
+calibration, results, export, audit). UI: judge workspace (`#/judging`,
+`#/judging/evaluate/:id`) + organizer section (`#/organizer/judging/*`).
+Role isolation: judges query only via assignment join; cross-judge analytics
+organizer-only. Pairwise/Bradley-Terry explicitly excluded (future bonus).
+
+## 6. Tier 3 — Community (designed, not built)
+
+Tables: `votes(id, project_id, voter_id, value, UNIQUE(project_id, voter_id))`,
+`comments(id, project_id, author_id, body, status, created_at)`,
+`audit_log(id, actor_id, action, entity, entity_id, meta JSONB, created_at)`.
+Behaviors: public results hidden until `events.reveal_at` (new nullable column);
+gallery ordering randomized per visitor-session seed; rate limits
+(express-rate-limit, per-IP + per-user buckets) on auth/votes/comments;
+duplicate-vote detection via unique constraint + idempotency keys.
+
+## 7. Tier 4 — Platform (designed, not built)
+
+- REST API v1: `/api/v1/*` JSON envelope + API keys table (`api_keys`), scopes.
+- Webhooks: `webhook_endpoints(id, owner_id, url, secret, events[])`,
+  `webhook_deliveries(id, endpoint_id, event, payload, status, attempts)` +
+  signed (HMAC) POST worker with backoff.
+- Certificates: `certificates(id, submission_id UNIQUE, code UNIQUE, pdf_path)`
+  + verification page.
+- Verifiable judge records: hash-chained `result_snapshots` published to gallery.
+- Embeds: `frontend/embed.js` + `/api/v1/events/:id/embed` (paginated JSON/HTML snippet).
+- Bulk import/export: CSV/JSON for events/teams/projects/results.
+
+## 8. Bonus — Judging engine (designed, not built)
+
+Standalone contract (`bonus/`): normalization proof doc + fixtures,
+pairwise module (Bradley-Terry over judge pairwise prefs table
+`pairwise_prefs`), threat-model doc (collusion/bias/Sybil/timing mitigations),
+API-first OpenAPI sketch so the engine can run as a sidecar later.
+
+## 9. Performance & scale notes (engineering targets)
+
+- 10k participants / 100 staff / ~1k public visitors-min: served by indexed
+  queries + pagination + stateless API + pool (20) + nginx gzip + static SPA.
+- No N+1: counts batched via `IN (…)` aggregates; gallery selects a 220-char
+  excerpt, never full bodies in lists.
+- Rate-limit-ready: auth/gallery paths structured for middleware buckets (Tier 3).
+- Scale path (no rewrite): read-replica for gallery, Redis for sessions/rate
+  limits, judging worker split from `routes/` services.
+
+### Query discipline (verified in code — no full-table loads)
+
+| Endpoint | Strategy |
+|---|---|
+| `GET /api/events` | `WHERE status` on `idx_events_status`, `LIMIT/OFFSET`; counts via 3 batched `IN (…)` aggregates |
+| `GET /api/gallery` | `WHERE status + ILIKE` with `LIMIT ≤ 24`; `SUBSTRING` excerpt; link counts batched |
+| `GET /api/organizer/*` | Scoped by `created_by` (`idx_events_created_by`), then `IN (…)` aggregates |
+| `GET /api/stats/organizer` | Single grouped aggregate over indexed FK joins (no per-row queries) |
+| All lists | Envelope `{data, page, limit, total, totalPages}`; frontend never holds more than one page |
+| Writes | Parameterized, FK-guarded, unique-constraint backed (duplicates rejected by DB, not just app code) |
+
+## 10. Security model
+
+bcrypt (10 rounds) passwords; opaque 256-bit session tokens (sha256 stored,
+30-day expiry, httpOnly `SameSite=Lax` cookie + Bearer fallback); admin-bypass
+RBAC; ownership checks on every mutation; invite codes are 64–128-bit random;
+deadline/clock checks server-side; parameterized queries throughout (no string
+SQL); 256 KB JSON body cap; validation errors returned per-field.

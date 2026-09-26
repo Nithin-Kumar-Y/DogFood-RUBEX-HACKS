@@ -1,87 +1,168 @@
-===============================================================================
- DOGFOOD TIER 1 ACCEPTANCE VERIFICATION REPORT
- Generated: September 2026
- Status: TIER 1 FULLY IMPLEMENTED & VERIFIED (TIERS 2-4 NOT IMPLEMENTED YET)
-===============================================================================
+DOGFOOD — Tier 1 Acceptance Checklist (PASS / FAIL with evidence)
+==============================================================================
+Date (UTC): 2026-09-25 · Scope: TIER 1 ONLY (Tier 2/3/4/bonus: NOT implemented,
+explicit 501 placeholders + "coming in Tier N" pages — no fake features).
 
-1. SUMMARY OF AUTOMATED ACCEPTANCE TESTS
--------------------------------------------------------------------------------
-Test Suite: backend/src/tests/run-tests.ts
-Execution Command: npm test
-Passed Tests: 26 / 26
-Failed Tests: 0 / 26
-Test Success Rate: 100.0%
+Verification method
+-------------------
+- `cd backend && npm install && npm test` → 42 passed / 0 failed
+  (node:test + supertest + pg-mem; migration SQL applied verbatim).
+- `node --check frontend/app.js` → clean; all 30 router handlers verified defined.
+- `docker-compose.yml` YAML-valid; Dockerfiles + nginx.conf reviewed.
+  (No Docker daemon in this build env — compose boot not executed here; the
+  boot path wait→migrate→seed→listen is covered by migrate/seed test runs.)
+- Full 22-step §17 scenario executed as backend/tests/acceptance.test.js (19/19).
 
-Detailed Automated Test Verification:
-  [TEST GROUP 1: AUTHENTICATION & LOGIN]
-  ✓ PASS: Participant registration returns 201 & session token
-  ✓ PASS: Registration with duplicate email rejected with 409 Conflict
-  ✓ PASS: Login with correct password returns 200 OK & session token
-  ✓ PASS: Login with bad password rejected with 401 Unauthorized
-  ✓ PASS: GET /api/auth/me returns valid user object
-  ✓ PASS: Unauthenticated request rejected with 401 Unauthorized
+Complete application flow (§1)
+-------------------------------
+PASS  PUBLIC LANDING (#/) — hero, how-it-works, live events + gallery preview.
+      Evidence: viewHome renders events (GET /api/events) + projects (GET /api/gallery).
+PASS  REGISTER (#/register → POST /api/auth/register, 201) — validation + duplicate 409.
+      Evidence: tests "registers a participant", "rejects duplicate registration".
+PASS  LOGIN (#/login → POST /api/auth/login, 200; wrong password 401).
+PASS  ROLE-BASED DASHBOARD (#/dashboard|#/organizer|#/admin|#/judging) — real DB stats.
+      Evidence: GET /api/stats/me, GET /api/stats/organizer {events,teams,projects,
+      submissions,participants,drafts,upcoming}; test asserts exact numbers 1/1/1/0/1/1.
+PASS  EVENT (#/events, #/events/:id ← GET /api/events, GET /api/events/:id).
+PASS  TEAM (#/teams, #/teams/:id ← POST+GET /api/teams).
+PASS  INVITATION (#/join/:code ← GET /api/teams/invites/:code/preview,
+      POST /api/invites/:code/accept) — invalid 404, expired 410, duplicate 409.
+      Evidence: organizer.test.js "expired invitations are rejected with 410",
+      "regenerating the invite … kills the old one".
+PASS  PROJECT + DRAFT (#/projects, #/projects/:id ← POST/PUT /api/projects, status=draft).
+PASS  SUBMISSION (review modal → POST /api/projects/:id/submit → confirmation w/ timestamp).
+      Evidence: test "submits the project and shows confirmation".
+PASS  DEADLINE ENFORCEMENT (server clock; late edit/submit/unsubmit → 400/403; LOCKED badge).
+      Evidence: "enforces deadline: late submissions blocked on backend".
+PASS  ORGANIZER SUBMISSION VIEW (#/organizer/submissions + per-event view ←
+      GET /api/organizer/submissions, GET /api/events/:id/submissions).
+PASS  PUBLIC GALLERY (#/gallery ← GET /api/gallery, paginated) + SEARCH (q) +
+      TRACK FILTER (track_id) + PROJECT DETAILS (#/gallery/:id).
+      Evidence: "submitted project appears in public gallery + search + details",
+      "gallery paginates", "drafts are NOT in the public gallery".
 
-  [TEST GROUP 2: ROLE ISOLATION & RBAC GUARDS]
-  ✓ PASS: Participant cannot create events (403 Forbidden)
-  ✓ PASS: Participant cannot access admin stats (403 Forbidden)
-  ✓ PASS: Organizer cannot access admin stats (403 Forbidden)
-  ✓ PASS: Admin can access system stats (200 OK)
+Navigation (§3)
+---------------
+PASS  Participant sidebar: Dashboard, Events, Teams, Projects, Submissions, Profile (+ Gallery).
+PASS  Organizer sidebar: Dashboard, Events, Teams, Projects, Submissions, Settings.
+PASS  Admin sidebar: Dashboard, Users, Events, System. Judge: placeholder page only.
+PASS  Public top nav: Home, Events, Gallery. Active states use segment-aware matching;
+      breadcrumbs on all detail/manage pages; every page has title + primary action.
 
-  [TEST GROUP 3: EVENT MANAGEMENT]
-  ✓ PASS: Event with start_date >= end_date rejected with 400 Bad Request
-  ✓ PASS: Organizer successfully creates event (201 Created)
-  ✓ PASS: Public can view published event with tracks
+Participant / organizer experience (§4–§5)
+------------------------------------------
+PASS  State visibility: DRAFT/SUBMITTED/LOCKED badges, countdowns, submission-status card
+      with submitted-at timestamp, preview-before-submit.
+PASS  Organizer dashboard numbers (participants/teams/projects/drafts/submissions +
+      upcoming deadlines) all from live SQL aggregates — test asserts exact values.
+PASS  Organizer can create/publish/edit/archive events with tracks + prizes
+      (POST/PUT/DELETE /api/events + /tracks + /prizes; date validation 400).
 
-  [TEST GROUP 4: TEAM MANAGEMENT & MEMBERSHIP INTEGRITY]
-  ✓ PASS: Participant creates team with auto-generated code (201 Created)
-  ✓ PASS: User cannot join/create multiple teams in same event (409 Conflict)
-  ✓ PASS: Team leader invites member and receives token
-  ✓ PASS: Invited participant joins team (200 OK)
-  ✓ PASS: Participant cannot join duplicate team in same event (409 Conflict)
+Invitations (§7) · Submission UX (§8) · Gallery (§9) · Responsive (§10)
+-----------------------------------------------------------------------
+PASS  Invalid (404) / expired (410) / already-member (409) / cross-team duplicate (409) /
+      non-member (403) invite cases each return distinct, user-friendly messages.
+PASS  Submit flow: edit → preview → review modal (title/team/track/links/deadline) →
+      success toast with server timestamp → status card. Double-submit → 409.
+PASS  Gallery cards show name/excerpt/team/track/links; server-side pagination (≤24/page);
+      "No projects found for this search." empty state; track filter per event.
+PASS  Layouts adapt (grids collapse 4→2→1, sidebar→mobile nav, tables scroll in place,
+      modal scrolls ≤88vh, full-width actions ≤640px). No external fonts/assets.
 
-  [TEST GROUP 5: PROJECT DRAFTS & EDITING]
-  ✓ PASS: Project draft created with status DRAFT
-  ✓ PASS: Project draft successfully edited with links
+Database (§11) · Performance (§12) · Docker/demo data (§13–§14)
+----------------------------------------------------------------
+PASS  FKs on every relation; UNIQUE(email, invite_code, team_member pair, project per
+      submission); CHECKs (roles, statuses, dates); CASCADE deletes; indexes on all
+      FK/status/deadline/search columns; created/updated timestamps.
+PASS  No unbounded queries: every list is page+limit+total; counts batched via IN(…);
+      gallery uses SUBSTRING excerpt; see ARCHITECTURE.md §9 table.
+PASS  `docker compose up --build` → db → backend (wait/migrate/seed) → frontend :8080.
+      Verified statically (daemon absent here); migrations + idempotent seed executed
+      and row-counted in tests (9 users, 3 events, 4 teams, 4 projects, 3 submissions).
+PASS  Demo accounts documented in README + login page (admin/organizer/judge/participants).
 
-  [TEST GROUP 6: SUBMISSION SYSTEM & DEADLINE ENFORCEMENT]
-  ✓ PASS: Non-team member cannot submit project (403 Forbidden)
-  ✓ PASS: Project successfully submitted before deadline (200 OK)
-  ✓ PASS: Backend strictly rejects submissions after deadline with 400 Bad Request
+Security / RBAC (§15) · Errors (§16)
+-------------------------------------
+PASS  Participant→organizer endpoints 403 (event create, submissions list, aggregates,
+      admin users). Cross-team project read/write 403. Unauthenticated → 401 + login
+      redirect. Organizer→admin 403 (redirect). Organizer A cannot see B's data.
+      Evidence: auth/events/projects/organizer suites (10+ negative assertions).
+PASS  400/401/403/404/409/410/500 mapped to human messages in UI; error handler returns
+      generic JSON (no stack traces); 256 KB body cap; parameterized queries only.
 
-  [TEST GROUP 7: PUBLIC GALLERY, SEARCH & PAGINATION]
-  ✓ PASS: Gallery lists submitted projects with pagination
-  ✓ PASS: Gallery search finds project by title keyword
-  ✓ PASS: Gallery displays complete project details and team roster
+Build / tests (§18)
+--------------------
+PASS  42/42 backend tests green. Frontend: no build step by design (static SPA) → 0 build
+      errors; `node --check` clean; 0 TS (project is JS by design); 0 broken Tier-1 routes
+      (30/30 handlers verified); no internet required at runtime (0 CDN references).
 
--------------------------------------------------------------------------------
-2. VERIFIED MANUAL ACCEPTANCE WORKFLOW
--------------------------------------------------------------------------------
-Workflow Path:
-  1. Register User -> Success (tested both participant and organizer)
-  2. Login -> Success (JWT issued, persistent session stored)
-  3. Browse / Join Event -> Success (public events rendered with timeline)
-  4. Create Team -> Success (code generated, leader role assigned)
-  5. Invite Member -> Success (unique token generated, copyable link)
-  6. Accept Invite -> Success (teammate added to team roster)
-  7. Duplicate Membership Prevention -> Verified (blocked with 409)
-  8. Create Project Draft -> Success (status DRAFT, links saved)
-  9. Edit Draft -> Success (real-time draft saving)
-  10. Submit Project -> Success (status SUBMITTED, timestamp recorded)
-  11. Deadline Enforcement -> Verified (submissions after deadline strictly blocked with 400)
-  12. Organizer Reviews Submissions -> Success (filter by event, inspect links)
-  13. Public Gallery -> Success (search, filter, pagination, no infinite browser dump)
-  14. Project Details -> Success (roster, links, notes, tracks rendered)
-  15. Role Isolation -> Verified (backend RBAC middleware strictly guards endpoints)
+FAIL items: none known in Tier 1 scope. Tier 2/3/4/bonus remain placeholders by design.
 
--------------------------------------------------------------------------------
-3. HONEST REPORT OF FUTURE TIERS
--------------------------------------------------------------------------------
-  - Tier 1 (Core): FULLY IMPLEMENTED AND WORKING
-  - Tier 2 (Judging): NOT IMPLEMENTED (Architecture & schemas prepared in JUDGING.md and tier-2/)
-  - Tier 3 (Community): NOT IMPLEMENTED (Placeholder in tier-3/)
-  - Tier 4 (Stretch): NOT IMPLEMENTED (Placeholder in tier-4/)
-  - Bonus (Proofs & Engine): NOT IMPLEMENTED (Documentation in bonus/)
-
-CONCLUSION:
-All Tier 1 acceptance requirements are satisfied, tested, and complete.
-===============================================================================
+======================================================================
+TIER-2 JUDGING ACCEPTANCE (implemented incrementally, Tier-1 untouched)
+Date (UTC): 2026-09-25 · Suite: 73 passed / 0 failed (42 Tier-1 + 31 Tier-2)
+======================================================================
+PASS  Tier-1 still works — all 42 Tier-1 tests green unmodified; only Tier-1
+      touchpoints: one router mount line, version strings, seed additions.
+PASS  Judge invitation — POST /judging/events/:id/judges (new or existing
+      account, temp password when needed); duplicate invite → 409.
+      Evidence: judging.test.js setup; roster GET lists 2 judges.
+PASS  Judge management — roster statuses invited/active/suspended/completed
+      (PUT …/status), removal blocked after submitted evaluations (400).
+PASS  Manual assignment — judge + submitted-project validation, duplicate
+      prevention with skipped reporting. Batch — deterministic seeded shuffle +
+      rotation deal, coverage/max_load honored, idempotent re-run.
+      Evidence: e2e batch test (6×2=12 created, balanced 6/6, re-run 0 new).
+PASS  Rubric configurable — title + N criteria (label/max/weight/required/
+      description); versions (old deactivated, drafts pinned to original).
+PASS  Evaluations persist — draft (partial OK) → submit; raw_total computed
+      server-side (A: P1=70 P3=80; B: P1=87 P3=96 P4=92); out-of-range → 400;
+      submitted locks for judges (409); organizer reopen audited, raws kept.
+PASS  Judge isolation — B cannot open/evaluate/read A's work (403 ×3 shapes);
+      judges denied results/progress/audit/export (403); participants denied
+      everything judging (403); anonymous 401. All backend-enforced.
+PASS  Judge progress — per-judge assigned/completed/remaining/pct/avg/min/max
+      (A: 3/3, 100%, avg 75, min 70, max 80); organizer-only.
+PASS  Calibration workflow — run start (reference + mode, per-event versions);
+      shared-project assignment with dedupe counts; calculate.
+PASS  Shared anchors are SAME projects — pairs built by project_id match only;
+      anchor IDs persisted on every calibration row (P1/P3 asserted).
+PASS  Two-point formula exact — slope 10/9, intercept ≈−26.666667; B 87→70,
+      92→75.5556 (≈75.56), 96→80. Evidence: normalization.test.js (13) +
+      judging.test.js calibration assertions.
+PASS  Slope/intercept persisted — judge_calibrations rows assert slope≈1.1111,
+      intercept≈−26.67; reference self-row slope 1 / intercept 0.
+PASS  Raw scores unchanged — evaluation raws asserted identical after
+      recalculation; versioned runs (v1/v2/v3 coexist; run-1 outputs persist).
+PASS  Normalized scores persist — 118 rows in e2e (100 normal + 18 cal);
+      run-1 keeps 100 rows (10 VALID + 90 INSUFFICIENT).
+PASS  Finals correct — P4 final ≈75.56; P1 (70+70)/2; ranked; pending/invalid/
+      excluded counted, only VALID/EXTRAPOLATED averaged.
+PASS  Edge cases — zero denominator INVALID/ZERO_SOURCE_RANGE; one shared
+      INSUFFICIENT/ONLY_ONE_SHARED_PROJECT; negative slope SUSPICIOUS (engine
+      unit); extrapolation calculated + flagged; missing → PENDING; duplicate
+      anchors INVALID (engine unit + DB CHECK/UNIQUE).
+PASS  Audit explanation — GET /judging/normalized/:id returns worked formula
+      "70 + ((92 − 87) / (96 − 87)) × (80 − 70)" from persisted data; owner or
+      organizer only (other judge 403).
+PASS  Organizer calibration UI — runs table, per-pair slope/intercept/status
+      table, counts, modes, reference selector (judge pages under
+      #/organizer/judging/*); judge workspace (#/judging, #/judging/evaluate).
+PASS  Score comparison — raw + normalized matrices with avgs, σ, ranges,
+      extrapolated flags; organizer-only.
+PASS  CSV export — evaluations level has all 15 required columns
+      (project_id…extrapolated) + finals; projects level has normalized_avg
+      etc.; 119 lines in e2e; judge export denied (403).
+PASS  Automated tests pass — 73/73 (normalization 13, workflow 14, e2e 4,
+      Tier-1 42). Type checking: n/a (project is JS by design; node --check
+      clean on all backend + frontend files). Lint: no linter configured;
+      code follows existing strict-mode/commonjs conventions. Production
+      build: n/a by design (static SPA, zero-dependency backend — nothing to
+      compile; `node --check` + full test suite are the gates).
+PASS  Docker/local workflow — compose files unchanged and still valid;
+      migration 003 applies cleanly (verified via harness); seed extended and
+      row-count verified (rubric, roster, 2 evals, v1 run). Daemon absent in
+      this env (as in Tier-1), so boot is statically + logically verified.
+Remaining limitations: pairwise/Bradley-Terry not implemented (future);
+calibration extras beyond mode minimums are retained as evidence only;
+conflict-of-interest exclusion not modeled; single region-local deployment.

@@ -1,177 +1,153 @@
-# DOGFOOD 🐶🥫
-### Open-Source, Self-Hostable Hackathon Registration, Submission, Judging & Results Platform
+# DOGFOOD 🐶
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tier 1 Status](https://img.shields.io/badge/Tier%201%20Core-100%25%20Complete-emerald)](https://github.com/)
-[![Tests](https://img.shields.io/badge/Acceptance%20Tests-26%2F26%20Passing-brightgreen)](https://github.com/)
-[![Offline First](https://img.shields.io/badge/Offline--First-Enabled-indigo)](https://github.com/)
+**DOGFOOD** (eat your own dogfood) is an open-source, self-hostable hackathon
+registration, submission, judging, and results platform.
 
-**DOGFOOD** is an open-source, offline-first platform designed to run hackathons anywhere—from university auditoriums with spotty internet to air-gapped corporate labs and global remote challenges.
+> **Tier 1 + Tier 2 judging are complete and tested (73/73).**
+> Tier 3 (community), Tier 4 (platform), and the bonus judging engine are
+> **architected but not yet implemented** — see `ARCHITECTURE.md`, `JUDGING.md`.
 
-> **PROJECT SCOPE NOTICE**:
-> This codebase implements and verifies **TIER 1 (CORE PLATFORM)**.
-> Tiers 2, 3, 4, and Bonus capabilities are designed with full extension points, schema definitions, and module boundaries, but are **NOT** implemented yet in accordance with the prompt instructions.
+## Features (Tier 1 ✅)
 
----
+| Area | What works |
+|---|---|
+| Auth | Register, login, logout, persistent sessions (DB-backed opaque tokens), secure bcrypt passwords |
+| Roles | Participant / Organizer / Judge / Admin with **backend-enforced RBAC** |
+| Events | Create, edit, publish/unpublish/archive, dates, deadline, tracks, prizes, validation |
+| Teams | Create, rename, invite links (30-day expiry, regenerable), join, leave rules, ownership transfer guard, one-team-per-event + duplicate prevention |
+| Projects | Create draft, edit, gallery **preview**, track selection, links, DRAFT / SUBMITTED / LOCKED states |
+| Submissions | Review-and-submit confirmation, timestamp shown, server-side validation, **backend deadline enforcement**, unsubmit-before-deadline, organizer submissions view + CSV export |
+| Gallery | Public, searchable, event + **track filters**, **server-side paginated** project cards + detail pages |
+| Judging (Tier 2) | Judge invitations + roster statuses, manual + deterministic batch assignment, versioned weighted rubrics, draft/submit evaluations with server-computed totals, judge progress analytics, shared-anchor calibration with two-point linear normalization (slope/intercept persisted), normalized finals, why-explanations, CSV export, full audit trail |
+| UI | Modern SaaS design system: toasts, skeletons, empty/error/loading states, countdowns, responsive + mobile nav, accessible forms |
+| Ops | `docker compose up` → app running, DB migrated + seeded; health endpoint; offline-capable |
 
-## 🌟 Key Tier 1 Features (Fully Working)
-
-- **Authentication & Sessions**: Secure salted bcrypt password hashing, persistent relational session tracking, and JWT token issuance.
-- **Backend-Enforced RBAC**: Strict server-side role isolation for `PARTICIPANT`, `ORGANIZER`, `JUDGE`, and `ADMIN`. Never relies on client-side routing alone.
-- **Event Management**: Organizers configure events, start/end timelines, submission deadlines, custom tracks, prizes, and publish toggles.
-- **Team Formation & Membership Integrity**: Form teams, generate invite codes and direct invite links, and prevent duplicate memberships within the same hackathon.
-- **Project Drafts & Submissions**: Participants draft projects, save descriptions, and link repositories and demos. Clear state management (`DRAFT`, `SUBMITTED`, `LOCKED`).
-- **Strict Backend Deadline Enforcement**: The backend server unconditionally rejects submissions after the deadline.
-- **Public Searchable Gallery**: Server-side pagination, search queries, track filters, and project cards with full team rosters.
-- **Modern SaaS UI/UX**: Dark mode with glassmorphism, responsive navigation, live deadline countdown timers, confirmation modals, loading skeletons, and interactive toast alerts.
-
----
-
-## 🏛️ Clean Modular Architecture
-
-DOGFOOD follows the **Frontend → Backend/API → Service/Business Logic → Database** paradigm:
+## Architecture
 
 ```
-dogfood/
-├── backend/
-│   ├── src/
-│   │   ├── config/          # Environment configuration
-│   │   ├── database/        # Relational schema, SQLite/Postgres adapters, seeds
-│   │   ├── middleware/      # Auth, RBAC guards, error handling, rate limiting
-│   │   ├── modules/
-│   │   │   ├── auth/        # Authentication & persistent sessions
-│   │   │   ├── events/      # Hackathons, tracks, prizes, dates
-│   │   │   ├── teams/       # Team formation, invites, membership integrity
-│   │   │   ├── projects/    # Drafts, external links, editing
-│   │   │   ├── submissions/ # Backend deadline enforcement & locking
-│   │   │   ├── gallery/     # Search, filter, server-side pagination
-│   │   │   ├── admin/       # System health & user management
-│   │   │   └── judging/     # Tier 2 extension interfaces
-│   │   ├── tests/           # 26 automated acceptance tests
-│   │   └── server.ts        # Express API bootstrap
-│   ├── Dockerfile
-│   └── package.json
-├── frontend/
-│   ├── src/
-│   │   ├── components/      # Navbar, Sidebar, CountdownTimer, Modal, Toast, StatCard
-│   │   ├── context/         # AuthContext (with quick demo switchers) & ToastContext
-│   │   ├── pages/           # Participant, Organizer, Judge, Admin, Public pages
-│   │   ├── services/        # Type-safe API client
-│   │   ├── styles/          # Modern SaaS CSS design system (tokens, glassmorphism)
-│   │   └── App.tsx          # Client router with RBAC guards
-│   ├── Dockerfile
-│   ├── nginx.conf
-│   └── package.json
-├── tier-2/                  # Tier 2 Judging Engine extension documentation
-├── tier-3/                  # Tier 3 Community Voting extension documentation
-├── tier-4/                  # Tier 4 Webhooks & REST API extension documentation
-├── bonus/                   # Bonus mathematical normalization proofs
-├── docker-compose.yml       # Production Compose with DB, Backend, and Frontend
-├── ARCHITECTURE.md          # End-to-end multi-tier architecture design
-├── DATA-MODEL.md            # Relational database schema & ER diagram
-├── JUDGING.md               # Planned judging engine architecture & proofs
-├── acceptance-report.txt    # Verification report of Tier 1 tests
-└── LICENSE                  # MIT License
+browser (static SPA: frontend/index.html + styles.css + app.js)
+   │  same-origin /api/* (nginx reverse-proxy)
+   ▼
+backend (Node 20 + Express) ── routes → services → pg
+   │                              │
+   └─ sessions/tokens, RBAC, validation, deadline guards
+db (PostgreSQL 16): users, sessions, events, event_tracks, prizes,
+   teams, team_members, team_invitations, projects, project_links, submissions
 ```
 
----
+## Technology stack
 
-## 🚀 Running the Application
+| Layer | Choice | Why |
+|---|---|---|
+| Frontend | Zero-dependency SPA (plain HTML/CSS/JS, hash router) | No build step → 0 build errors; no CDN → works offline; tiny payload |
+| API | Node.js 20 + Express 4 | Stable, boring, huge hiring pool; easy to self-host |
+| Auth | bcryptjs + opaque session tokens (sha256 in DB) | No JWT secret management; instant revocation via logout |
+| Database | PostgreSQL 16 | Relational integrity (FKs, uniques, checks), indexes, JSONB snapshots |
+| Proxy/static | nginx:alpine | Same-origin `/api` proxy (no CORS pain), gzip, caching headers |
+| Tests | node:test + supertest + pg-mem | Full API coverage with zero external services |
+| Ship | Docker Compose (db + backend + frontend) | One command: `docker compose up --build` |
 
-### Option A: Using Docker Compose (Primary Target)
+Role navigation: Participant (Dashboard, Events, Teams, Projects, Submissions,
+Profile), Organizer (Dashboard, Events, Teams, Projects, Submissions,
+Settings), Admin (Dashboard, Users, Events, System), Judge (placeholder for
+Tier 2), Public (Home, Events, Gallery).
 
-Start the entire stack (PostgreSQL database, Node.js backend, and Nginx React frontend):
+Clean module boundaries: `frontend/` → `backend/src/routes/` →
+business logic in route handlers + `util.js` → `db.js` (pooled `pg`).
+Auth lives in `auth.js` middleware; every privileged route re-checks the
+session + role on the server. Full details in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+schema details in [`DATA-MODEL.md`](DATA-MODEL.md); judging plan in [`JUDGING.md`](JUDGING.md).
+
+## Quickstart (Docker — the supported path)
+
+Prerequisites: Docker + Docker Compose only. No cloud accounts, no hosted DB,
+no API keys. After images are pulled, the app runs **without internet**.
 
 ```bash
-docker compose up
+git clone <this-repo> && cd dogfood
+docker compose up --build
 ```
 
-Once running:
-- **Frontend App**: [http://localhost:3000](http://localhost:3000)
-- **Backend API**: [http://localhost:4000/api](http://localhost:4000/api)
-- **Database**: PostgreSQL on port 5432 (auto-initialized and seeded on startup)
+Then open:
 
-To stop the containers:
-```bash
-docker compose down
-```
+- **App:** http://localhost:8080
+- **API (direct):** http://localhost:3001/api/health
 
----
+On first boot the backend waits for Postgres, runs migrations
+(`backend/migrations/*.sql`), seeds demo data (`backend/src/seed.js`,
+idempotent — skips if users exist), and starts serving.
 
-### Option B: Local Direct Execution (100% Offline with SQLite)
-
-DOGFOOD contains an embedded relational SQLite adapter (`better-sqlite3` with WAL mode). You can run it directly on any computer without Docker or external databases:
-
-1. **Install Dependencies**:
-   ```bash
-   cd backend && npm install
-   cd ../frontend && npm install
-   cd ..
-   ```
-
-2. **Initialize Database & Seed Data**:
-   ```bash
-   npm run seed
-   ```
-
-3. **Start the Development Servers**:
-   In terminal 1 (Backend API on port 4000):
-   ```bash
-   npm run backend
-   ```
-   In terminal 2 (Frontend SPA on port 3000):
-   ```bash
-   npm run frontend
-   ```
-   Open [http://localhost:3000](http://localhost:3000) in your browser.
-
----
-
-## 👥 Demo Accounts & Credentials
-
-The database seeds realistic demo users automatically on initial startup. All accounts share the password: **`Dogfood123!`**
-
-| Role | Email | Password | Name / Description |
-|---|---|---|---|
-| **Organizer** | `organizer@dogfood.local` | `Dogfood123!` | Elena Rostova (Lead Hackathon Director) |
-| **Participant (Lead)** | `alice@dogfood.local` | `Dogfood123!` | Alice Chen (Leader of *NeuralForge*) |
-| **Participant (Member)**| `bob@dogfood.local` | `Dogfood123!` | Bob Martinez (Member of *NeuralForge*) |
-| **Judge** | `judge@dogfood.local` | `Dogfood123!` | Marcus Sterling (Hackathon Judge) |
-| **Admin** | `admin@dogfood.local` | `Dogfood123!` | Alex Vance (System Administrator) |
-
-> 💡 **Tip**: When testing in the browser, click the **"Switch Role Demo"** dropdown in the top navigation bar to switch between roles in 1 click!
-
----
-
-## 🧪 Automated Testing
-
-Execute the 26 automated acceptance tests verifying authentication, authorization, role isolation, team uniqueness, deadline enforcement, and public gallery search:
+Useful commands:
 
 ```bash
-npm test
+docker compose up --build      # first run / rebuild
+docker compose up -d           # detached
+docker compose logs -f backend # follow backend logs
+docker compose down            # stop (keeps data)
+docker compose down -v         # stop + wipe database
 ```
 
-All 26 tests will run against the relational database and output a verified pass report:
+## Local development (without Docker)
+
+```bash
+# 1. Start Postgres 16 locally and create db `dogfood`
+createdb dogfood   # user/pass per DATABASE_URL below
+
+# 2. Backend
+cd backend
+npm install
+set DATABASE_URL=postgres://dogfood:dogfood@localhost:5432/dogfood   # Windows
+# export DATABASE_URL=...                                             # macOS/Linux
+npm run migrate  # optional — `npm start` migrates automatically
+npm start        # → http://localhost:3000
+
+# 3. Frontend (any static server; API must be reachable at /api)
+cd ../frontend
+npx serve .      # then proxy /api → localhost:3000, or just use Docker
 ```
-======================================================
- ACCEPTANCE TEST SUMMARY:
- Passed: 26
- Failed: 0
- Status: ALL TIER 1 CAPABILITIES VERIFIED ✓
-======================================================
+
+## Demo accounts (seeded automatically)
+
+| Role | Email | Password |
+|---|---|---|
+| Admin | `admin@dogfood.local` | `Admin123!` |
+| Organizer | `organizer@dogfood.local` | `Organizer123!` |
+| Judge (Tier 2 ready) | `judge@dogfood.local` | `Judge123!` |
+| Participant | `priya@dogfood.local` | `Password123!` |
+| Participant | `sam@dogfood.local` | `Password123!` |
+| … | `lena@, marco@, aisha@, tom@dogfood.local` | `Password123!` |
+
+Seeded content: 3 events (published / archived / draft), tracks + prizes,
+4 teams, 2 submitted projects, 1 draft project, 1 archived submission —
+plus Tier-2 demo judging on the published event (rubric, judge roster with
+`judge@dogfood.local`, assignments, submitted evaluations 70 & 80, and a
+completed v1 calibration run, so every judging page is explorable instantly).
+
+## Testing
+
+```bash
+cd backend
+npm install
+npm test   # 73 tests, node:test + supertest + pg-mem (no Docker/DB needed)
 ```
 
----
+Covers: auth, role isolation, event validation, team + invite flow
+(incl. duplicate prevention), project draft/edit, submission validation,
+organizer-only submission view, gallery search/pagination/draft-exclusion,
+backend deadline enforcement, and unauthorized-access blocking.
+Honest results in [`acceptance-report.txt`](acceptance-report.txt).
 
-## 📚 Architectural Documentation Links
+## Project layout
 
-- **System Architecture**: [ARCHITECTURE.md](file:///./ARCHITECTURE.md)
-- **Relational Data Model**: [DATA-MODEL.md](file:///./DATA-MODEL.md)
-- **Planned Judging Blueprint**: [JUDGING.md](file:///./JUDGING.md)
-- **Verification Report**: [acceptance-report.txt](file:///./acceptance-report.txt)
+```
+docker-compose.yml        # db + backend + frontend, one-command boot
+backend/                  # Express API, migrations, seeds, tests, Dockerfile
+frontend/                 # offline SPA (index.html, styles.css, app.js), nginx.conf, Dockerfile
+tier-2/ tier-3/ tier-4/ bonus/   # placeholders with READMEs (not implemented)
+README.md ARCHITECTURE.md DATA-MODEL.md JUDGING.md acceptance-report.txt
+LICENSE (MIT)
+```
 
----
+## License
 
-## 📄 License
-
-DOGFOOD is open-source software licensed under the **MIT License**. See [LICENSE](file:///./LICENSE) for details.
+MIT — see [LICENSE](LICENSE). Contributions welcome.

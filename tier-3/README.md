@@ -1,26 +1,13 @@
-# Tier 3 — Public & Community Engagement (Planned Architecture)
+# Tier 3 — Public / Community (NOT IMPLEMENTED)
 
-> **STATUS: NOT IMPLEMENTED YET**
->
-> In accordance with the prompt guidelines, Tier 3 is **NOT** implemented in this phase.
-> The database schema extension points (`community_votes`, `project_comments`, `audit_logs`) are reserved and documented in `DATA-MODEL.md`.
+Placeholder for the Tier 3 community extension (later prompt). Planned scope:
 
----
+- Community voting (one vote per user per project, anti-brigading)
+- Comments with moderation queue
+- Hidden results until reveal time
+- Randomized project ordering in the gallery
+- Rate limiting (login, votes, comments)
+- Duplicate-vote detection
+- Audit trails (append-only event log)
 
-## Planned Capabilities for Tier 3
-
-### 1. Community Voting & People's Choice
-- Public and participant-driven voting mechanisms with strict anti-sybil protections.
-- Client fingerprinting and IP hashing to prevent voting fraud without requiring invasive trackers.
-- Rate-limiting voting actions with exponential backoff on burst activity.
-
-### 2. Moderated Feedback & Discussion
-- Threaded project discussions with organizer moderation controls.
-- Markdown-enabled constructive feedback sections.
-
-### 3. Fair Discovery & Hidden Results
-- Randomized project ordering algorithms to avoid positional bias on popular project cards.
-- Blinded results: Organizer can hide live vote tallies until the awards ceremony broadcast.
-
-### 4. Comprehensive Audit Trails
-- Cryptographically timestamped audit logging of all sensitive administrative, team, and score actions.
+Backend returns `501 Not Implemented` for `/api/votes/*` and `/api/comments/*`.
