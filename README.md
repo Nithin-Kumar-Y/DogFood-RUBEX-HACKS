@@ -1,153 +1,269 @@
-# DOGFOOD 🐶
+# DOGFOOD 🐶 — Hackathon Management & Judging Platform
 
-**DOGFOOD** (eat your own dogfood) is an open-source, self-hostable hackathon
-registration, submission, judging, and results platform.
+**DOGFOOD** ("eat your own dogfood") is an open-source, self-hostable, production-ready platform for hackathon registration, team formation, project submissions, cross-judge calibrated scoring, and community engagement.
 
-> **Tier 1 + Tier 2 judging are complete and tested (73/73).**
-> Tier 3 (community), Tier 4 (platform), and the bonus judging engine are
-> **architected but not yet implemented** — see `ARCHITECTURE.md`, `JUDGING.md`.
+Built as an offline-first modular monolith, DOGFOOD runs out of the box with zero external cloud dependencies, zero API keys, and zero frontend bundling toolchains.
 
-## Features (Tier 1 ✅)
+---
 
-| Area | What works |
-|---|---|
-| Auth | Register, login, logout, persistent sessions (DB-backed opaque tokens), secure bcrypt passwords |
-| Roles | Participant / Organizer / Judge / Admin with **backend-enforced RBAC** |
-| Events | Create, edit, publish/unpublish/archive, dates, deadline, tracks, prizes, validation |
-| Teams | Create, rename, invite links (30-day expiry, regenerable), join, leave rules, ownership transfer guard, one-team-per-event + duplicate prevention |
-| Projects | Create draft, edit, gallery **preview**, track selection, links, DRAFT / SUBMITTED / LOCKED states |
-| Submissions | Review-and-submit confirmation, timestamp shown, server-side validation, **backend deadline enforcement**, unsubmit-before-deadline, organizer submissions view + CSV export |
-| Gallery | Public, searchable, event + **track filters**, **server-side paginated** project cards + detail pages |
-| Judging (Tier 2) | Judge invitations + roster statuses, manual + deterministic batch assignment, versioned weighted rubrics, draft/submit evaluations with server-computed totals, judge progress analytics, shared-anchor calibration with two-point linear normalization (slope/intercept persisted), normalized finals, why-explanations, CSV export, full audit trail |
-| UI | Modern SaaS design system: toasts, skeletons, empty/error/loading states, countdowns, responsive + mobile nav, accessible forms |
-| Ops | `docker compose up` → app running, DB migrated + seeded; health endpoint; offline-capable |
+## 1. Project Overview
 
-## Architecture
+Running hackathons smoothly requires solving three major coordination problems:
+1. **Participant Lifecycle & Deadline Integrity:** Hackathon participants need frictionless team creation, invite link sharing, and project draft staging, while organizers require strict, server-side deadline enforcement to prevent late submissions.
+2. **Fair & Defensible Judging:** Judges exhibit varying scoring behaviors—some grade strictly while others are generous. Comparing uncalibrated raw scores distorts winners. DOGFOOD solves this with a **mathematically grounded two-point linear normalization engine** based on shared anchor projects.
+3. **Auditability & Community Engagement:** Organizers need transparent score derivations ("Why is this project ranked here?"), tamper-evident audit trails, and anti-brigading community voting.
+
+---
+
+## 2. Main Capabilities
+
+DOGFOOD provides a complete end-to-end platform across three implemented tiers:
+
+### Tier 1 — Core Hackathon Management
+- **Authentication & RBAC:** Email + bcrypt passwords, opaque SHA-256 database sessions, and backend-enforced roles (`participant`, `organizer`, `judge`, `admin`).
+- **Event Lifecycle:** Create, edit, publish, and archive events with custom tracks, prizes, and strict server-enforced submission deadlines.
+- **Teams & Invitations:** Create teams, generate 30-day expiring shareable invite codes, join/leave teams, transfer ownership, with strict one-team-per-user-per-event rules.
+- **Projects & Submissions:** Draft editing, track selection, rich links, pre-submission review modals, frozen JSONB submission snapshots, and server-side submission locks.
+- **Public Project Gallery:** Server-side paginated showcase with search queries (`q`) and track filters.
+
+### Tier 2 — Calibrated Judging Subsystem
+- **Judge Roster Lifecycle:** Invite judges and track status (`invited`, `active`, `suspended`, `completed`).
+- **Flexible Rubrics:** Multi-criteria weighted rubrics with versioning (`rubrics` + `rubric_criteria`).
+- **Assignment Engine:** Manual 1-to-1 assignments or deterministic, balanced batch assignment using the Mulberry32 seeded PRNG with coverage and max-load controls.
+- **Judge Workspace:** Isolated scoring view where judges grade assigned projects with criterion-level validation and draft-saving. Server calculates weighted totals.
+- **Cross-Judge Calibration & Normalization:** Two-point linear transformation mapping source judges to a configurable reference judge scale using shared anchor projects.
+- **Explainability:** Interactive "Why is this score?" derivations providing step-by-step mathematical proofs from persisted anchor scores.
+- **Exports & Auditing:** Granular evaluation-level and project-level CSV exports, plus an append-only audit trail (`audit_events`).
+
+### Tier 3 — Community Voting & Discussion
+- **Public Voting Rounds:** Configurable voting rounds (`open`, `paused`, `closed`, `results_revealed`) with custom vote allowances.
+- **Anti-Brigading Guardrails:** Relational constraint `UNIQUE(voting_round_id, voter_id, project_id)` guarantees one vote per project per user.
+- **Hidden Results During Voting:** Prevents bandwagon effects; live counts are revealed only when organizers officially close and reveal results.
+- **Randomized Presentation Ordering:** Eliminates primacy bias by shuffling project presentation per visitor session.
+- **Community Feedback & Moderation:** Project comments with an organizer moderation workflow (`visible`, `hidden`, `flagged`, `deleted`).
+- **In-Database Rate Limiting:** Sliding-window throttling on votes and comments without external Redis dependencies.
+
+---
+
+## 3. Architecture Overview
 
 ```
-browser (static SPA: frontend/index.html + styles.css + app.js)
-   │  same-origin /api/* (nginx reverse-proxy)
-   ▼
-backend (Node 20 + Express) ── routes → services → pg
-   │                              │
-   └─ sessions/tokens, RBAC, validation, deadline guards
-db (PostgreSQL 16): users, sessions, events, event_tracks, prizes,
-   teams, team_members, team_invitations, projects, project_links, submissions
+                               ┌────────────────────────────────┐
+                               │     Web Browser (Client)       │
+                               └──────────────┬─────────────────┘
+                                              │ HTTP :8080
+                                              ▼
+                               ┌────────────────────────────────┐
+                               │   NGINX Reverse Proxy & SPA    │
+                               │     (Same-Origin /api/*)       │
+                               └──────────────┬─────────────────┘
+                                              │ Proxy Pass :3000
+                                              ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        Node.js 20 / Express 4 API Backend                              │
+├────────────────────────────────┬───────────────────────────────┬──────────────────────┤
+│  Authentication & Sessions     │  Event & Team Management      │  Project Submissions │
+├────────────────────────────────┼───────────────────────────────┼──────────────────────┤
+│  Judging & Assignment Engine   │  Normalization Engine         │  Community Voting    │
+├────────────────────────────────┼───────────────────────────────┼──────────────────────┤
+│  Audit Logger                  │  CSV Streaming Exporter       │  In-DB Rate Limiter  │
+└────────────────────────────────┬───────────────────────────────┴──────────────────────┘
+                                 │ PostgreSQL Protocol :5432
+                                 ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                             PostgreSQL 16 Database                                    │
+│   (Relational Schema · Foreign Keys · Unique Constraints · B-Tree Indexes · JSONB)     │
+└────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Technology stack
+For full architectural diagrams, component breakdowns, and data flows, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-| Layer | Choice | Why |
-|---|---|---|
-| Frontend | Zero-dependency SPA (plain HTML/CSS/JS, hash router) | No build step → 0 build errors; no CDN → works offline; tiny payload |
-| API | Node.js 20 + Express 4 | Stable, boring, huge hiring pool; easy to self-host |
-| Auth | bcryptjs + opaque session tokens (sha256 in DB) | No JWT secret management; instant revocation via logout |
-| Database | PostgreSQL 16 | Relational integrity (FKs, uniques, checks), indexes, JSONB snapshots |
-| Proxy/static | nginx:alpine | Same-origin `/api` proxy (no CORS pain), gzip, caching headers |
-| Tests | node:test + supertest + pg-mem | Full API coverage with zero external services |
-| Ship | Docker Compose (db + backend + frontend) | One command: `docker compose up --build` |
+---
 
-Role navigation: Participant (Dashboard, Events, Teams, Projects, Submissions,
-Profile), Organizer (Dashboard, Events, Teams, Projects, Submissions,
-Settings), Admin (Dashboard, Users, Events, System), Judge (placeholder for
-Tier 2), Public (Home, Events, Gallery).
+## 4. Technology Stack
 
-Clean module boundaries: `frontend/` → `backend/src/routes/` →
-business logic in route handlers + `util.js` → `db.js` (pooled `pg`).
-Auth lives in `auth.js` middleware; every privileged route re-checks the
-session + role on the server. Full details in [`ARCHITECTURE.md`](ARCHITECTURE.md);
-schema details in [`DATA-MODEL.md`](DATA-MODEL.md); judging plan in [`JUDGING.md`](JUDGING.md).
+- **Frontend:** Plain HTML5, CSS3, Vanilla JavaScript (ES2022) Single-Page Application (SPA). Zero build step, zero bundling dependencies, zero external CDNs.
+- **Reverse Proxy / Web Server:** NGINX 1.27 Alpine.
+- **Backend API:** Node.js 20 LTS, Express 4.19.
+- **Database:** PostgreSQL 16 Alpine with connection pooling (`pg` 8.12).
+- **In-Memory PostgreSQL Engine:** `pg-mem` 2.9 (integrated for test execution and offline fallback).
+- **Security:** `bcryptjs` for salted password hashing, SHA-256 for opaque session token lookups.
+- **Testing:** Native Node.js test runner (`node:test`), `supertest` for HTTP integration tests.
+- **Containerization:** Docker & Docker Compose v2.
 
-## Quickstart (Docker — the supported path)
+---
 
-Prerequisites: Docker + Docker Compose only. No cloud accounts, no hosted DB,
-no API keys. After images are pulled, the app runs **without internet**.
+## 5. Quick Start
+
+### Running with Docker Compose (Recommended)
+
+Clone the repository and launch the multi-container stack:
 
 ```bash
-git clone <this-repo> && cd dogfood
-docker compose up --build
+git clone https://github.com/Nithin-Kumar-Y/DogFood-RUBEX-HACKS.git
+cd DogFood-RUBEX-HACKS
+docker compose up
 ```
 
-Then open:
+*(If making code modifications, run `docker compose up --build`)*
 
-- **App:** http://localhost:8080
-- **API (direct):** http://localhost:3001/api/health
+Once started, open your browser:
+- **Web Application:** [http://localhost:8080](http://localhost:8080)
+- **API Health Check:** [http://localhost:3001/api/health](http://localhost:3001/api/health) (or [http://localhost:8080/api/health](http://localhost:8080/api/health))
 
-On first boot the backend waits for Postgres, runs migrations
-(`backend/migrations/*.sql`), seeds demo data (`backend/src/seed.js`,
-idempotent — skips if users exist), and starts serving.
+### Running Locally Without Docker (Zero-Dependency Node Run)
 
-Useful commands:
-
-```bash
-docker compose up --build      # first run / rebuild
-docker compose up -d           # detached
-docker compose logs -f backend # follow backend logs
-docker compose down            # stop (keeps data)
-docker compose down -v         # stop + wipe database
-```
-
-## Local development (without Docker)
+DOGFOOD supports a fully embedded local development mode that boots an embedded PostgreSQL engine:
 
 ```bash
-# 1. Start Postgres 16 locally and create db `dogfood`
-createdb dogfood   # user/pass per DATABASE_URL below
-
-# 2. Backend
-cd backend
 npm install
-set DATABASE_URL=postgres://dogfood:dogfood@localhost:5432/dogfood   # Windows
-# export DATABASE_URL=...                                             # macOS/Linux
-npm run migrate  # optional — `npm start` migrates automatically
-npm start        # → http://localhost:3000
+npm start
+```
+The application will automatically initialize the database, execute all migrations, load seed data, and start the frontend at [http://localhost:8080](http://localhost:8080).
 
-# 3. Frontend (any static server; API must be reachable at /api)
-cd ../frontend
-npx serve .      # then proxy /api → localhost:3000, or just use Docker
+---
+
+## 6. Seeded Demo Accounts & Sample Data
+
+On initial boot, the database is deterministically seeded with realistic demo data (`backend/src/seed.js`).
+
+### Pre-Configured Demo Accounts
+
+> **Note:** These credentials are for local demo and testing environments only.
+
+| Role | Email | Password | Primary Capabilities |
+|---|---|---|---|
+| **Admin** | `admin@dogfood.local` | `Admin123!` | System-wide visibility, role management, user administration |
+| **Organizer** | `organizer@dogfood.local` | `Organizer123!` | Create events, manage rubrics, batch assign judges, run calibration, export CSVs |
+| **Judge** | `judge@dogfood.local` | `Judge123!` | Isolated judging queue, submit criterion scores, provide qualitative feedback |
+| **Participant** | `priya@dogfood.local` | `Password123!` | Lead of team "Pixel Pioneers", project "StudyBuddy", view submissions |
+| **Participant** | `sam@dogfood.local` | `Password123!` | Team member of "Pixel Pioneers" |
+| **Participant** | `lena@dogfood.local` | `Password123!` | Lead of team "Data Wizards", project "CampusEats" |
+| **Participant** | `marco@dogfood.local` | `Password123!` | Team member of "Data Wizards" |
+| **Participant** | `aisha@dogfood.local` | `Password123!` | Solo builder of draft project "DormDash" |
+
+### Pre-Seeded Hackathon Environment
+- **Flagship Event:** "Campus Hack 2026" (Published, actively running with 3 tracks and 3 prizes).
+- **Submitted Projects:**
+  - *StudyBuddy:* Web & Mobile track, submitted with repository and live demo links.
+  - *CampusEats:* AI & Data track, submitted with video demo link.
+  - *DormDash:* Draft project (unsubmitted).
+- **Pre-Configured Judging:** Active 4-criteria rubric ("Standard 100"), judge assignments, submitted evaluations, and a completed calibration run with persisted normalized scores.
+- **Community Voting:** Active voting round ("Community Choice") with cast votes and discussion comments.
+
+---
+
+## 7. Complete Event Lifecycle Walkthrough
+
+To experience the complete platform flow:
+
+1. **Log in as Organizer:** Sign in as `organizer@dogfood.local` (`Organizer123!`). Visit the Organizer Dashboard to inspect live metrics.
+2. **Inspect or Create an Event:** View "Campus Hack 2026" under `#/events` or create a new event with custom tracks and submission deadlines.
+3. **Participant Registration & Team Formation:** Log in as `priya@dogfood.local` (`Password123!`), navigate to `#/teams`, copy the invite code, or add team members.
+4. **Project Submission:** In `#/projects`, review the project draft. Click "Submit", inspect the pre-submission modal, and submit before the deadline.
+5. **Configure Judging Rubric:** As Organizer, navigate to `#/organizer/judging/rubric` and configure evaluation criteria (e.g., Innovation, Technical Execution, Impact, Presentation) with custom weights and point caps.
+6. **Assign Judges:** Under `#/organizer/judging/assignments`, view assignments or execute a batch assignment using a deterministic random seed.
+7. **Judge Scoring:** Sign in as `judge@dogfood.local` (`Judge123!`), open `#/judging`, select an assigned project, fill out rubric scores, add comments, and click "Submit Evaluation".
+8. **Normalize Scores:** As Organizer, open `#/organizer/judging/calibration`. Select a reference judge, calculate two-point linear normalization across shared anchor projects, and view fitted slopes and intercepts.
+9. **Inspect Final Standings & Explainability:** Open `#/organizer/judging/results`. Review final calibrated rankings, standard deviations, and click "Why?" to inspect the exact mathematical derivation.
+10. **Export Results:** Click "Export evaluations CSV" or "Export projects CSV" to download timestamped audit reports.
+
+---
+
+## 8. Test Suite
+
+The repository includes a comprehensive, multi-tier automated test suite executed with the native Node.js test runner and `supertest` over an in-memory PostgreSQL instance.
+
+### Running Tests
+
+From the repository root:
+
+```bash
+npm test
 ```
 
-## Demo accounts (seeded automatically)
-
-| Role | Email | Password |
-|---|---|---|
-| Admin | `admin@dogfood.local` | `Admin123!` |
-| Organizer | `organizer@dogfood.local` | `Organizer123!` |
-| Judge (Tier 2 ready) | `judge@dogfood.local` | `Judge123!` |
-| Participant | `priya@dogfood.local` | `Password123!` |
-| Participant | `sam@dogfood.local` | `Password123!` |
-| … | `lena@, marco@, aisha@, tom@dogfood.local` | `Password123!` |
-
-Seeded content: 3 events (published / archived / draft), tracks + prizes,
-4 teams, 2 submitted projects, 1 draft project, 1 archived submission —
-plus Tier-2 demo judging on the published event (rubric, judge roster with
-`judge@dogfood.local`, assignments, submitted evaluations 70 & 80, and a
-completed v1 calibration run, so every judging page is explorable instantly).
-
-## Testing
+Or from the `backend/` directory:
 
 ```bash
 cd backend
-npm install
-npm test   # 73 tests, node:test + supertest + pg-mem (no Docker/DB needed)
+npm test
 ```
 
-Covers: auth, role isolation, event validation, team + invite flow
-(incl. duplicate prevention), project draft/edit, submission validation,
-organizer-only submission view, gallery search/pagination/draft-exclusion,
-backend deadline enforcement, and unauthorized-access blocking.
-Honest results in [`acceptance-report.txt`](acceptance-report.txt).
-
-## Project layout
+### Test Results Summary
 
 ```
-docker-compose.yml        # db + backend + frontend, one-command boot
-backend/                  # Express API, migrations, seeds, tests, Dockerfile
-frontend/                 # offline SPA (index.html, styles.css, app.js), nginx.conf, Dockerfile
-tier-2/ tier-3/ tier-4/ bonus/   # placeholders with READMEs (not implemented)
-README.md ARCHITECTURE.md DATA-MODEL.md JUDGING.md acceptance-report.txt
-LICENSE (MIT)
+✔ Tier 1 — Auth & RBAC (registration, login, invalid credentials, sessions, roles)
+✔ Tier 1 — Organizer Aggregates, Stats, Invite Expiry (410 handling, token regeneration)
+✔ Tier 1 — Projects, Submissions, Deadlines, Gallery (CRUD, deadline guards, pagination)
+✔ Tier 2 — Normalization Engine (slope/intercept math, zero-range guards, edge statuses)
+✔ Tier 2 — Judging Workflow (roster, rubric versions, evaluations, calibration, CSV, audit)
+✔ Tier 2 — E2E Scale Simulation (10 judges, 100 projects, deterministic PRNG batch assignment)
+✔ Tier 3 — Community Voting Lifecycle (round states, vote limits, withdrawal rules)
+✔ Tier 3 — Anti-Brigading & Concurrency (atomic duplicate prevention, rate limits)
+✔ Tier 3 — Moderation & Comments (comment thread, hiding/restoring, profanity/XSS guards)
+✔ Tier 3 — Hidden Results & Randomized Presentation (elimination of bandwagon/primacy bias)
+✔ Tier 3 — E2E Acceptance Flow (complete voting round from creation to public reveal)
+
+----------------------------------------------------------------------------------------
+Test Suites: 23 passed, 23 total
+Tests:       163 passed, 163 total
+Failures:    0
+Duration:    ~45 seconds
 ```
 
-## License
+---
 
-MIT — see [LICENSE](LICENSE). Contributions welcome.
+## 9. Docker Architecture & Container Details
+
+Docker Compose orchestrates three networked services:
+
+```yaml
+services:
+  db:
+    image: postgres:16-alpine
+    volumes: [dogfood_pgdata:/var/lib/postgresql/data]
+    healthcheck: pg_isready
+  backend:
+    build: ./backend
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["3001:3000"]
+  frontend:
+    build: ./frontend
+    depends_on: [backend]
+    ports: ["8080:80"]
+```
+
+- **Clean Startup Dependency:** The backend waits for the database container to pass health checks before executing database migrations and idempotent seeding.
+- **Data Persistence:** Relational database records are safely retained in the named volume `dogfood_pgdata`. To reset to clean seed data, run `docker compose down -v` followed by `docker compose up`.
+
+---
+
+## 10. 5-Minute Demonstration Walkthrough
+
+When recording or evaluating a 5-minute live platform demonstration:
+
+| Timestamp | Phase | Action / Screen | Key Talking Points |
+|---|---|---|---|
+| **0:00 – 0:30** | **Platform Overview** | Homepage (`#/`), Gallery (`#/gallery`) | Introduce DOGFOOD: self-hostable, zero-dependency stack, offline-capable hackathon platform. |
+| **0:30 – 1:00** | **Event & Submissions** | Organizer Dashboard (`#/organizer`), Projects (`#/projects`) | Show event creation with deadlines and tracks; demonstrate project submission lock and snapshot integrity. |
+| **1:00 – 1:45** | **Rubric & Assignments** | Rubrics (`#/organizer/judging/rubric`), Assignments (`#/organizer/judging/assignments`) | Show weighted multi-criteria rubric; execute deterministic batch assignment of judges using Mulberry32 PRNG. |
+| **1:45 – 3:00** | **Judge Evaluation** | Judge Workspace (`#/judging`), Score Form (`#/judging/evaluate/:id`) | Log in as judge; show isolated queue; score criteria; submit evaluation; highlight server-side weighted sum computation. |
+| **3:00 – 4:00** | **Calibration & Normalization** | Calibration (`#/organizer/judging/calibration`), Results (`#/organizer/judging/results`) | Explain shared anchor projects; run calibration; show slope/intercept calculations; inspect "Why is this score?" popup. |
+| **4:00 – 4:30** | **Exports & Audit Trail** | Results (`#/organizer/judging/results`), Audit (`#/organizer/judging/audit`) | Download evaluations and projects CSVs; view immutable audit log capturing every event mutation. |
+| **4:30 – 5:00** | **Architecture & Integrity** | Architecture Diagram, Community Voting (`#/voting`) | Highlight PostgreSQL relational guarantees, Docker Compose topology, and anti-brigading community voting. |
+
+---
+
+## 11. Documentation Directory
+
+For in-depth technical documentation, consult the following specifications:
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): Comprehensive system architecture, security model, request flows, and technical decisions.
+- [`DATA-MODEL.md`](DATA-MODEL.md): Complete database entity definitions, Mermaid ER diagrams, indexes, constraints, and CSV formats.
+- [`JUDGING.md`](JUDGING.md): Mathematical derivation of two-point linear normalization, anchor project rules, edge cases, and numerical examples.
+- [`acceptance-report.txt`](acceptance-report.txt): Formal requirement-by-requirement verification and test audit.
+
+---
+
+## 12. Open-Source License
+
+DOGFOOD is released under the **MIT License**, an OSI-approved permissive open-source license. See the [`LICENSE`](LICENSE) file for complete terms.
